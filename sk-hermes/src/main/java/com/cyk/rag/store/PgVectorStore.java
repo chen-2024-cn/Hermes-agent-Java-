@@ -89,31 +89,57 @@ public class PgVectorStore implements VectorStore {
                 created_at = NOW()
             """;
 
-        try (Connection conn = getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
+        Connection conn = null;
+        try {
+            conn = getConnection();
+            conn.setAutoCommit(false);
 
-            for (int i = 0; i < chunks.size(); i++) {
-                Chunk chunk = chunks.get(i);
-                float[] vec = embeddings.get(i);
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                for (int i = 0; i < chunks.size(); i++) {
+                    Chunk chunk = chunks.get(i);
+                    float[] vec = embeddings.get(i);
 
-                ps.setString(1, chunk.id());
-                ps.setString(2, chunk.sourcePath());
-                ps.setString(3, null); // source_hash: 由 RagEngine 计算
-                ps.setInt(4, chunk.chunkIndex());
-                ps.setString(5, chunk.content());
-                ps.setInt(6, chunk.tokenCount());
+                    ps.setString(1, chunk.id());
+                    ps.setString(2, chunk.sourcePath());
+                    ps.setString(3, null); // source_hash: 由 RagEngine 计算
+                    ps.setInt(4, chunk.chunkIndex());
+                    ps.setString(5, chunk.content());
+                    ps.setInt(6, chunk.tokenCount());
 
-                // pgvector: float[] → 逗号分隔的字符串表示
-                ps.setString(7, vectorToString(vec));
-                ps.setString(8, toJson(chunk.metadata()));
+                    // pgvector: float[] → 逗号分隔的字符串表示
+                    ps.setString(7, vectorToString(vec));
+                    ps.setString(8, toJson(chunk.metadata()));
 
-                ps.addBatch();
+                    ps.addBatch();
+                }
+                ps.executeBatch();
             }
-            ps.executeBatch();
+
+            conn.commit();
             logger.debug("Inserted {} chunks", chunks.size());
         } catch (SQLException e) {
+            if (conn != null) {
+                try {
+                    conn.rollback();
+                } catch (SQLException rb) {
+                    logger.error("Rollback failed", rb);
+                }
+            }
             logger.error("Failed to insert batch", e);
             throw new RuntimeException("Batch insert failed", e);
+        } finally {
+            if (conn != null) {
+                try {
+                    conn.setAutoCommit(true);
+                } catch (SQLException e) {
+                    logger.error("Failed to reset auto-commit", e);
+                }
+                try {
+                    conn.close();
+                } catch (SQLException e) {
+                    logger.error("Failed to close connection", e);
+                }
+            }
         }
     }
 
@@ -147,7 +173,7 @@ public class PgVectorStore implements VectorStore {
                 }
             }
         } catch (SQLException e) {
-            logger.error("Vector search failed", e);
+            logger.error("Vector search failed (limit={})", limit, e);
         }
         return results;
     }
@@ -184,7 +210,7 @@ public class PgVectorStore implements VectorStore {
                 }
             }
         } catch (SQLException e) {
-            logger.error("Keyword search failed", e);
+            logger.error("Keyword search failed (query={}, limit={})", query, limit, e);
         }
         return results;
     }
