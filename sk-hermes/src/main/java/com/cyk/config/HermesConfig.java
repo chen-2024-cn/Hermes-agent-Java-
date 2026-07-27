@@ -74,6 +74,30 @@ public class HermesConfig {
         tools.put("enabled", Arrays.asList("terminal", "file_operations"));
         cfg.put("tools", tools);
 
+        // RAG 配置（默认关闭，需用户主动启用）
+        Map<String, Object> rag = new HashMap<>();
+        rag.put("enabled", false);
+        Map<String, Object> pgvector = new HashMap<>();
+        pgvector.put("url", "jdbc:postgresql://localhost:5432/hermes_rag");
+        pgvector.put("username", "hermes");
+        pgvector.put("password", "");
+        rag.put("pgvector", pgvector);
+        Map<String, Object> ragEmbedding = new HashMap<>();
+        ragEmbedding.put("model", "text-embedding-3-small");
+        ragEmbedding.put("base_url", "https://api.deepseek.com");
+        ragEmbedding.put("dimension", 1536);
+        ragEmbedding.put("batch_size", 20);
+        rag.put("embedding", ragEmbedding);
+        Map<String, Object> chunking = new HashMap<>();
+        chunking.put("size", 512);
+        chunking.put("overlap", 64);
+        rag.put("chunking", chunking);
+        Map<String, Object> search = new HashMap<>();
+        search.put("vector_weight", 0.7);
+        search.put("keyword_weight", 0.3);
+        search.put("default_top_k", 5);
+        rag.put("search", search);
+        cfg.put("rag", rag);
 
         return cfg;
 

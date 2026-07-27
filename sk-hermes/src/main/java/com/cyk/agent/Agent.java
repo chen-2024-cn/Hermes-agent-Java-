@@ -275,6 +275,9 @@ public class Agent {
         // 网页搜索指引
         prompt.append(Constants.WEB_SEARCH_GUIDANCE).append("\n\n");
 
+        // 知识库检索指引
+        prompt.append(Constants.RAG_GUIDANCE).append("\n\n");
+
         // 平台提示（命令行模式）
         String platformHint = Constants.PLATFORM_HINTS.get("cli");
         if (platformHint != null) {

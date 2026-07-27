@@ -208,6 +208,18 @@ public class ToolRegistry {
         SkillTool.register(instance);
         WebSearchTool.register(instance);
         FetchPageTool.register(instance);
+
+        // RAG 引擎（懒初始化：仅当配置启用且 pgvector 可用时注册）
+        try {
+            com.cyk.config.HermesConfig config = com.cyk.config.HermesConfig.load();
+            com.cyk.rag.RagEngine ragEngine = com.cyk.rag.RagEngine.create(config);
+            if (ragEngine != null) {
+                com.cyk.tool.RagTool.setEngine(ragEngine);
+                com.cyk.tool.RagTool.register(instance);
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to initialize RAG engine: {}", e.getMessage());
+        }
     }
 
 }
