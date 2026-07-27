@@ -147,7 +147,7 @@ public class PgVectorStore implements VectorStore {
     public List<ScoredChunk> searchByVector(float[] queryVec, int limit) {
         String vecStr = vectorToString(queryVec);
         String sql = """
-            SELECT id, source_path, content, 1 - (embedding <=> ?::vector) AS similarity, metadata
+            SELECT id, source_path, chunk_index, content, 1 - (embedding <=> ?::vector) AS similarity, metadata
             FROM rag_documents
             ORDER BY embedding <=> ?::vector
             LIMIT ?
@@ -167,13 +167,14 @@ public class PgVectorStore implements VectorStore {
                         rs.getString("id"),
                         rs.getString("source_path"),
                         rs.getString("content"),
+                        rs.getInt("chunk_index"),
                         rs.getDouble("similarity"),
                         parseMetadata(rs.getString("metadata"))
                     ));
                 }
             }
         } catch (SQLException e) {
-            logger.error("Vector search failed (limit={})", limit, e);
+            logger.error("Vector search failed (limit={}): {}", limit, e.getMessage(), e);
         }
         return results;
     }
@@ -181,7 +182,7 @@ public class PgVectorStore implements VectorStore {
     @Override
     public List<ScoredChunk> searchByKeyword(String query, int limit) {
         String sql = """
-            SELECT id, source_path, content,
+            SELECT id, source_path, chunk_index, content,
                    ts_rank(to_tsvector('simple', content), plainto_tsquery('simple', ?)) AS rank,
                    metadata
             FROM rag_documents
@@ -204,13 +205,14 @@ public class PgVectorStore implements VectorStore {
                         rs.getString("id"),
                         rs.getString("source_path"),
                         rs.getString("content"),
+                        rs.getInt("chunk_index"),
                         rs.getDouble("rank"),
                         parseMetadata(rs.getString("metadata"))
                     ));
                 }
             }
         } catch (SQLException e) {
-            logger.error("Keyword search failed (query={}, limit={})", query, limit, e);
+            logger.error("Keyword search failed (query={}, limit={}): {}", query, limit, e.getMessage(), e);
         }
         return results;
     }

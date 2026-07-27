@@ -13,8 +13,10 @@ public class MarkdownAwareChunking implements ChunkingStrategy {
     private static final Pattern H2_PATTERN = Pattern.compile("(?=^## )", Pattern.MULTILINE);
 
     private final FixedSizeChunking fallback;
+    private final int maxTokens;
 
     public MarkdownAwareChunking(int maxTokens, int overlapTokens) {
+        this.maxTokens = maxTokens;
         this.fallback = new FixedSizeChunking(maxTokens, overlapTokens);
     }
 
@@ -37,9 +39,8 @@ public class MarkdownAwareChunking implements ChunkingStrategy {
 
             int sectionTokens = fallback.estimateTokens(section);
 
-            if (sectionTokens <= fallback.estimateTokens("") + 512) {
-                // 短节直接作为一个 Chunk（估算里实际上应该用配置的 maxTokens）
-                // 这里 fallback 内部知道 maxTokens，我们简单判断
+            if (sectionTokens <= maxTokens) {
+                // 短节直接作为一个 Chunk
                 chunks.add(new Chunk(
                     UUID.randomUUID().toString(),
                     sourcePath,

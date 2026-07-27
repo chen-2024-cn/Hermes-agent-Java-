@@ -9,6 +9,7 @@ public record ScoredChunk(
     String chunkId,
     String sourcePath,
     String content,
+    int chunkIndex,
     double score,
     Map<String, Object> metadata
 ) {}

@@ -25,7 +25,6 @@ public class RagEngine {
 
     private static final Logger logger = LoggerFactory.getLogger(RagEngine.class);
 
-    private final HermesConfig config;
     private final EmbeddingClient embeddingClient;
     private final VectorStore vectorStore;
     private final Map<String, DocumentParser> parsers;
@@ -33,10 +32,9 @@ public class RagEngine {
     private final ChunkingStrategy defaultChunking;
     private final ChunkingStrategy markdownChunking;
 
-    private RagEngine(HermesConfig config, EmbeddingClient embeddingClient, VectorStore vectorStore,
+    private RagEngine(EmbeddingClient embeddingClient, VectorStore vectorStore,
                       Map<String, DocumentParser> parsers, HybridSearcher searcher,
                       ChunkingStrategy defaultChunking, ChunkingStrategy markdownChunking) {
-        this.config = config;
         this.embeddingClient = embeddingClient;
         this.vectorStore = vectorStore;
         this.parsers = parsers;
@@ -85,7 +83,7 @@ public class RagEngine {
             double kwWeight = config.getFromYml("rag.search.keyword_weight", 0.3);
             HybridSearcher searcher = new HybridSearcher(store, embedding, vecWeight, kwWeight);
 
-            return new RagEngine(config, embedding, store, parsers, searcher, defaultChunking, markdownChunking);
+            return new RagEngine(embedding, store, parsers, searcher, defaultChunking, markdownChunking);
         } catch (Exception e) {
             logger.error("Failed to initialize RAG engine", e);
             return null;
@@ -176,6 +174,7 @@ public class RagEngine {
 
     /** 按路径删除已索引的文档块。 */
     public int deleteByPath(String sourcePath) {
+        // VectorStore.deleteByPath is void, count not available
         vectorStore.deleteByPath(sourcePath);
         return 0;
     }

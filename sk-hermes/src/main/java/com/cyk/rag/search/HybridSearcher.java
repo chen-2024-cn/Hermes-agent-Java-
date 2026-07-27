@@ -52,7 +52,7 @@ public class HybridSearcher {
             .map(e -> {
                 ScoredChunk sc = chunkById.get(e.getKey());
                 return new SearchResult(
-                    sc.content(), sc.sourcePath(), 0, e.getValue(), sc.metadata()
+                    sc.content(), sc.sourcePath(), sc.chunkIndex(), e.getValue(), sc.metadata()
                 );
             })
             .toList();
@@ -86,7 +86,7 @@ public class HybridSearcher {
         try {
             List<ScoredChunk> results = vectorStore.searchByKeyword(query, topK);
             return results.stream()
-                .map(sc -> new SearchResult(sc.content(), sc.sourcePath(), 0, sc.score(), sc.metadata()))
+                .map(sc -> new SearchResult(sc.content(), sc.sourcePath(), sc.chunkIndex(), sc.score(), sc.metadata()))
                 .toList();
         } catch (Exception e) {
             logger.error("Keyword search also failed: {}", e.getMessage());
@@ -94,9 +94,4 @@ public class HybridSearcher {
         }
     }
 
-    private List<SearchResult> convert(List<ScoredChunk> chunks) {
-        return chunks.stream()
-            .map(sc -> new SearchResult(sc.content(), sc.sourcePath(), 0, sc.score(), sc.metadata()))
-            .toList();
-    }
 }

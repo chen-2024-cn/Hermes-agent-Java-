@@ -21,14 +21,14 @@ class HybridSearcherTest {
             @Override public void insertBatch(List<Chunk> chunks, List<float[]> embeddings) {}
             @Override public List<ScoredChunk> searchByVector(float[] queryVec, int limit) {
                 return List.of(
-                    new ScoredChunk("id1", "/a.md", "向量结果A", 0.95, Map.of()),
-                    new ScoredChunk("id2", "/b.md", "向量结果B", 0.80, Map.of())
+                    new ScoredChunk("id1", "/a.md", "向量结果A", 0, 0.95, Map.of()),
+                    new ScoredChunk("id2", "/b.md", "向量结果B", 0, 0.80, Map.of())
                 );
             }
             @Override public List<ScoredChunk> searchByKeyword(String query, int limit) {
                 return List.of(
-                    new ScoredChunk("id2", "/b.md", "关键词结果B", 0.90, Map.of()),
-                    new ScoredChunk("id3", "/c.md", "关键词结果C", 0.70, Map.of())
+                    new ScoredChunk("id2", "/b.md", "关键词结果B", 0, 0.90, Map.of()),
+                    new ScoredChunk("id3", "/c.md", "关键词结果C", 0, 0.70, Map.of())
                 );
             }
             @Override public void deleteByPath(String sourcePath) {}
