@@ -17,9 +17,14 @@ Thumbs.db
 
 # Claude Code
 .claude/
+CLAUDE.md
 
-# Understand Anything
-.understand-anything/
+# Superpowers
+.superpowers/
+
+# Project docs (external)
+docs/
+*.zip
 
 # Logs
 *.log
