@@ -44,15 +44,15 @@ class RagEngineEndToEndTest {
     void setUp() {
         vectorStore = new InMemoryVectorStore();
 
-        // 假 Embedding：用文本前 1536 个字符的 hash 生成伪向量
+        // 假 Embedding：用文本前 1024 个字符的 hash 生成伪向量
         // 语义相似的文本会产生相似的向量（至少前几个维度相同字符会匹配）
         fakeEmbedding = new EmbeddingClient() {
             @Override
             public float[] embed(String text) {
-                float[] vec = new float[1536];
+                float[] vec = new float[1024];
                 // 用字符编码填充向量，相同文本产生相同向量
                 char[] chars = text.toCharArray();
-                for (int i = 0; i < Math.min(chars.length, 1536); i++) {
+                for (int i = 0; i < Math.min(chars.length, 1024); i++) {
                     vec[i] = (float) chars[i] / 65536.0f;
                 }
                 return vec;
@@ -65,7 +65,7 @@ class RagEngineEndToEndTest {
 
             @Override
             public int dimension() {
-                return 1536;
+                return 1024;
             }
         };
 

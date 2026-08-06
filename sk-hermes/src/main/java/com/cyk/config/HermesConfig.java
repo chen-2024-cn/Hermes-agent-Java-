@@ -83,9 +83,10 @@ public class HermesConfig {
         pgvector.put("password", "");
         rag.put("pgvector", pgvector);
         Map<String, Object> ragEmbedding = new HashMap<>();
-        ragEmbedding.put("model", "text-embedding-3-small");
-        ragEmbedding.put("base_url", "https://api.deepseek.com");
-        ragEmbedding.put("dimension", 1536);
+        ragEmbedding.put("model", "BAAI/bge-m3");
+        ragEmbedding.put("base_url", "https://api.siliconflow.cn");
+        ragEmbedding.put("api_key", "");
+        ragEmbedding.put("dimension", 1024);
         ragEmbedding.put("batch_size", 20);
         rag.put("embedding", ragEmbedding);
         Map<String, Object> chunking = new HashMap<>();

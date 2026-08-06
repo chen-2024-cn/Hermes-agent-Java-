@@ -19,11 +19,13 @@ public class PgVectorStore implements VectorStore {
     private final String jdbcUrl;
     private final String username;
     private final String password;
+    private final int dimension;
 
-    public PgVectorStore(String jdbcUrl, String username, String password) {
+    public PgVectorStore(String jdbcUrl, String username, String password, int dimension) {
         this.jdbcUrl = jdbcUrl;
         this.username = username;
         this.password = password;
+        this.dimension = dimension;
     }
 
     private Connection getConnection() throws SQLException {
@@ -32,7 +34,7 @@ public class PgVectorStore implements VectorStore {
 
     @Override
     public void initSchema() {
-        String sql = """
+        String sql = String.format("""
             CREATE EXTENSION IF NOT EXISTS vector;
 
             CREATE TABLE IF NOT EXISTS rag_documents (
@@ -42,12 +44,12 @@ public class PgVectorStore implements VectorStore {
                 chunk_index     INT NOT NULL DEFAULT 0,
                 content         TEXT NOT NULL,
                 token_count     INT,
-                embedding       vector(1536),
+                embedding       vector(%d),
                 metadata        JSONB DEFAULT '{}',
                 created_at      TIMESTAMP DEFAULT NOW(),
                 UNIQUE (source_path, chunk_index)
             )
-            """;
+            """, dimension);
 
         try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
             stmt.execute(sql);

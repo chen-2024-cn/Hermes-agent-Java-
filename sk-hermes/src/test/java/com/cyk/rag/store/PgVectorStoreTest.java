@@ -23,7 +23,7 @@ class PgVectorStoreTest {
         String url = System.getenv().getOrDefault("PG_URL", "jdbc:postgresql://localhost:5432/hermes_rag");
         String user = System.getenv().getOrDefault("PG_USER", "hermes");
         String pass = System.getenv().getOrDefault("PG_PASS", "hermes");
-        store = new PgVectorStore(url, user, pass);
+        store = new PgVectorStore(url, user, pass, 1024);
         store.initSchema();
     }
 
@@ -34,7 +34,7 @@ class PgVectorStoreTest {
         Chunk chunk = new Chunk(UUID.randomUUID().toString(), "/test/vec.md", 0,
             "向量检索测试内容", 5, Map.of("section", "test"));
 
-        float[] embedding = new float[1536];
+        float[] embedding = new float[1024];
         embedding[0] = 1.0f;
 
         store.insertBatch(List.of(chunk), List.of(embedding));
@@ -51,7 +51,7 @@ class PgVectorStoreTest {
         Chunk chunk = new Chunk(UUID.randomUUID().toString(), "/test/kw.md", 0,
             "Java 项目使用 Spring Boot 框架", 5, Map.of());
 
-        float[] embedding = new float[1536];
+        float[] embedding = new float[1024];
         store.insertBatch(List.of(chunk), List.of(embedding));
 
         List<ScoredChunk> results = store.searchByKeyword("Spring Boot", 5);

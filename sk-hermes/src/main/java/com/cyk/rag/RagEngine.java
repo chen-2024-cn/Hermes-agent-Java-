@@ -53,17 +53,21 @@ public class RagEngine {
 
         try {
             // Embedding
-            String embedUrl = config.getFromYml("rag.embedding.base_url", config.getBaseUrl());
-            String embedModel = config.getFromYml("rag.embedding.model", "text-embedding-3-small");
-            int dimension = config.getFromYml("rag.embedding.dimension", 1536);
-            String apiKey = config.getApiKey();
-            EmbeddingClient embedding = new DeepSeekEmbedding(embedUrl, embedModel, apiKey, dimension);
+            String embedUrl = config.getFromYml("rag.embedding.base_url", "https://api.siliconflow.cn");
+            String embedModel = config.getFromYml("rag.embedding.model", "BAAI/bge-m3");
+            int dimension = config.getFromYml("rag.embedding.dimension", 1024);
+            // 优先使用 embedding 独立 api_key，未配置则回退到 chat 模型的 api_key
+            String embedApiKey = config.getFromYml("rag.embedding.api_key", "");
+            if (embedApiKey == null || embedApiKey.isEmpty()) {
+                embedApiKey = config.getApiKey();
+            }
+            EmbeddingClient embedding = new OpenAiEmbedding(embedUrl, embedModel, embedApiKey, dimension);
 
             // VectorStore
             String pgUrl = config.getFromYml("rag.pgvector.url", "");
             String pgUser = config.getFromYml("rag.pgvector.username", "");
             String pgPass = config.getFromYml("rag.pgvector.password", "");
-            VectorStore store = new PgVectorStore(pgUrl, pgUser, pgPass);
+            VectorStore store = new PgVectorStore(pgUrl, pgUser, pgPass, dimension);
             store.initSchema();
 
             // Parsers

@@ -13,12 +13,13 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
- * DeepSeek Embedding API 客户端。
+ * OpenAI 兼容 Embedding API 客户端。
+ * 支持所有兼容 OpenAI /v1/embeddings 接口的服务（硅基流动、DeepSeek、OpenAI 等）。
  * 复用 OkHttp 模式（与 ModelClient 一致）。
  */
-public class DeepSeekEmbedding implements EmbeddingClient {
+public class OpenAiEmbedding implements EmbeddingClient {
 
-    private static final Logger logger = LoggerFactory.getLogger(DeepSeekEmbedding.class);
+    private static final Logger logger = LoggerFactory.getLogger(OpenAiEmbedding.class);
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
 
     private final OkHttpClient httpClient;
@@ -28,7 +29,7 @@ public class DeepSeekEmbedding implements EmbeddingClient {
     private final String model;
     private final int dimension;
 
-    public DeepSeekEmbedding(String baseUrl, String model, String apiKey, int dimension) {
+    public OpenAiEmbedding(String baseUrl, String model, String apiKey, int dimension) {
         this.baseUrl = baseUrl;
         this.model = model;
         this.apiKey = apiKey;
@@ -59,7 +60,7 @@ public class DeepSeekEmbedding implements EmbeddingClient {
             String json = objectMapper.writeValueAsString(body);
 
             Request request = new Request.Builder()
-                    .url(baseUrl + "/embeddings")
+                    .url(baseUrl + "/v1/embeddings")
                     .post(RequestBody.create(json, JSON))
                     .addHeader("Authorization", "Bearer " + apiKey)
                     .addHeader("Content-Type", "application/json")
