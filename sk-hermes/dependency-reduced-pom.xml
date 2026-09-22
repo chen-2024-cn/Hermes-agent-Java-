@@ -33,6 +33,17 @@
               <goal>shade</goal>
             </goals>
             <configuration>
+              <filters>
+                <filter>
+                  <artifact>com.microsoft.playwright:driver-bundle</artifact>
+                  <excludes>
+                    <exclude>driver/mac/**</exclude>
+                    <exclude>driver/mac-arm64/**</exclude>
+                    <exclude>driver/linux/**</exclude>
+                    <exclude>driver/linux-arm64/**</exclude>
+                  </excludes>
+                </filter>
+              </filters>
               <transformers>
                 <transformer>
                   <mainClass>com.cyk.HermesAgent</mainClass>

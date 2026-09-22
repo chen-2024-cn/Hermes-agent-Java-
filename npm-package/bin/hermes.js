@@ -3,9 +3,13 @@
 /**
  * hermes CLI 入口（npm bin shim）。
  *
- * 职责链：定位 hermes.jar → 定位 java → spawn 子进程
- * 关键点：stdio:'inherit' 让 Java 进程直接接管终端（交互式对话、Ctrl+C 都正常），
- *        并透传退出码，保证脚本化调用（if errorlevel 1）语义不被破坏。
+ * 职责链：定位 hermes.jar（找不到则懒加载下载兜底）→ 定位 java → spawn 子进程
+ *
+ * 关键点：
+ *   - jar 懒下载：不依赖 postinstall（npm 新版本可能拦截安装脚本），首次运行发现无 jar
+ *     时现场下载（复用 scripts/download-jar.js 的重试逻辑），成功后才 spawn Java
+ *   - stdio:'inherit' 让 Java 进程直接接管终端（交互式对话、Ctrl+C 都正常）
+ *   - 透传退出码，保证脚本化调用（if errorlevel 1）语义不被破坏
  */
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
@@ -27,7 +31,8 @@ function resolveJar() {
     path.join(os.homedir(), '.hermes', 'hermes.jar'),
   ];
   for (const c of candidates) {
-    if (c && fs.existsSync(c)) return c;
+    // 加体积校验（>1MB）：排除之前下载中断遗留的空文件/半截 jar，避免把坏文件当好文件用
+    if (c && fs.existsSync(c) && fs.statSync(c).size > 1024 * 1024) return c;
   }
   return null;
 }
@@ -42,14 +47,18 @@ function findJava() {
   return 'java';
 }
 
-function main() {
-  const jar = resolveJar();
+async function main() {
+  // 找 jar：找不到 → 懒加载下载兜底（不依赖 postinstall，这是可靠性的核心）
+  let jar = resolveJar();
   if (!jar) {
-    console.error('[sk-hermes] 未找到 hermes.jar。三选一解决：');
-    console.error('  1. 设置环境变量 SKHERMES_JAR 指向 jar 文件');
-    console.error(`  2. 将构建产物复制到 ${path.join(PKG_ROOT, 'jar', 'hermes.jar')}`);
-    console.error('  3. 设置 SKHERMES_JAR_URL 后运行: node ' + path.join(PKG_ROOT, 'scripts', 'postinstall.js'));
-    process.exit(1);
+    const { ensureJar, resolveJarUrl } = require('../scripts/download-jar');
+    const dest = path.join(PKG_ROOT, 'jar', 'hermes.jar');
+    const ok = await ensureJar({ dest, url: resolveJarUrl(PKG_ROOT), maxAttempts: 5 });
+    if (!ok) {
+      console.error('[sk-hermes] 无法获取 hermes.jar，退出。请按上方提示手动提供 jar 后重试。');
+      process.exit(1);
+    }
+    jar = dest;
   }
 
   // Windows 控制台默认代码页是 GBK，Java 侧用 -Dstdout.encoding=UTF-8 写出 UTF-8 字节，
