@@ -162,6 +162,29 @@
                             <goal>shade</goal>
                         </goals>
                         <configuration>
+                            <!--
+                              jar 瘦身：com.microsoft.playwright:driver-bundle 内打包了全部平台的
+                              node 可执行文件（mac / mac-arm64 / linux / linux-arm64 / win32_x64，
+                              每份约 90~104MB，未压缩合计约 488MB）。本项目只在 Windows 上分发运行，
+                              故仅保留 win32_x64，排除其余四份死重。
+
+                              安全性：FetchPageTool 的 Playwright 为懒加载 + 优雅降级
+                              （create() 失败即置 playwrightAvailable=false 并回退 Jsoup），
+                              即便在非 Windows 平台运行也不会崩溃，只是失去 SPA 兜底抓取能力。
+
+                              注意：driver（核心 Java API）不过滤，只过滤 driver-bundle（二进制资源包）。
+                            -->
+                            <filters>
+                                <filter>
+                                    <artifact>com.microsoft.playwright:driver-bundle</artifact>
+                                    <excludes>
+                                        <exclude>driver/mac/**</exclude>
+                                        <exclude>driver/mac-arm64/**</exclude>
+                                        <exclude>driver/linux/**</exclude>
+                                        <exclude>driver/linux-arm64/**</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
                             <transformers>
                                 <transformer
                                         implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
