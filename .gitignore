@@ -24,6 +24,7 @@ CLAUDE.md
 
 # Project docs (external)
 docs/
+doc/
 *.zip
 
 # Logs

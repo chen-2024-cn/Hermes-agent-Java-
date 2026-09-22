@@ -21,8 +21,8 @@ import java.util.stream.Collectors;
  *
  * <h2>记忆类型</h2>
  * <ul>
- *   <li><b>memory（通用/项目记忆）</b> — 存储在当前项目的 .hermes/memories/MEMORY.md</li>
- *   <li><b>user（用户画像记忆）</b> — 存储在 .hermes/memories/USER.md</li>
+ *   <li><b>memory（通用/项目记忆）</b> — 存储在 ~/.skhermes/memories/MEMORY.md</li>
+ *   <li><b>user（用户画像记忆）</b> — 存储在 ~/.skhermes/memories/USER.md</li>
  * </ul>
  *
  * <h2>架构设计</h2>
@@ -41,7 +41,7 @@ import java.util.stream.Collectors;
  *        └──────┬───────┘
  *               │ 持久化
  *        ┌──────▼───────┐
- *        │  .hermes/     │
+ *        │  .skhermes/   │
  *        │  memories/    │
  *        │  ├─ MEMORY.md │  ← § 分隔的记忆条目
  *        │  └─ USER.md   │

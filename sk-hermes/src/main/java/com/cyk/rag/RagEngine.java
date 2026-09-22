@@ -89,7 +89,10 @@ public class RagEngine {
 
             return new RagEngine(embedding, store, parsers, searcher, defaultChunking, markdownChunking);
         } catch (Exception e) {
-            logger.error("Failed to initialize RAG engine", e);
+            // RAG 是可选能力：初始化失败时优雅降级（仅禁用 rag_index/rag_search 工具），
+            // 一行 WARN 告知用户即可，不刷堆栈（堆栈见 DEBUG）
+            logger.warn("RAG 引擎初始化失败，已禁用 RAG 工具（不影响其他对话功能）: {}", e.getMessage());
+            logger.debug("RAG engine init failure stack", e);
             return null;
         }
     }

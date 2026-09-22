@@ -1,23 +1,40 @@
 package com.cyk.command;
 
 import com.cyk.HermesAgent;
-import com.cyk.agent.Agent;
 import com.cyk.config.HermesConfig;
 import picocli.CommandLine;
 
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "chat", description = "chat with the bot")
+@CommandLine.Command(name = "chat", description = "与模型对话")
 public class ChatCommand implements Callable<Integer> {
 
     @CommandLine.ParentCommand
     private HermesAgent parent;
 
-    @CommandLine.Option(names = {"-m", "--model"}, description = "模型名称", defaultValue = "deepseek-v4-pro")
+    /**
+     * 模型选择：可以是 config.yaml 中 {@code models:} 段定义的别名（如 fast），
+     * 也可以是真实模型名（如 deepseek-chat）。
+     * <p>不设 defaultValue：null 表示用户未显式指定，应完全沿用配置文件顶层值。
+     * 若给了默认值，将无法区分「用户没传」与「用户传了默认值」，导致总覆盖配置。</p>
+     */
+    @CommandLine.Option(names = {"-m", "--model"}, description = "模型别名（models 段）或模型名")
     private String model;
 
-    @CommandLine.Option(names = {"-t", "--temperature"}, description = "温度参数")
-    private double temperature = 0.7;
+    /**
+     * 温度覆盖。用包装类型 Double：null 表示未传入（沿用配置），
+     * 避免基本类型 double 的默认值 0.0 被误当成用户显式设置。
+     */
+    @CommandLine.Option(names = {"-t", "--temperature"}, description = "温度参数（覆盖配置）")
+    private Double temperature;
+
+    /** 开启流式输出（逐 token 实时打印）。 */
+    @CommandLine.Option(names = {"-s", "--stream"}, description = "启用流式输出")
+    private boolean stream;
+
+    /** 显式关闭流式输出（优先级高于配置文件 agent.stream）。 */
+    @CommandLine.Option(names = {"--no-stream"}, description = "禁用流式输出")
+    private boolean noStream;
 
     @Override
     public Integer call() throws Exception {
@@ -29,13 +46,10 @@ public class ChatCommand implements Callable<Integer> {
             if (parent != null && parent.getConfigPath() != null) {
                 System.out.println("使用配置: " + parent.getConfigPath());
             }
-            System.out.println("模型: " + (model != null ? model : "默认"));
-            System.out.println("温度: " + temperature);
-            //配置
+
             HermesConfig config = HermesConfig.load();
-            Agent agent = new Agent(config);
-            agent.run();
-            return 0;
+            // chat 命令启动新会话（resumeSessionId 传 null）
+            return ChatRunner.start(config, model, temperature, ChatRunner.resolveStream(stream, noStream), null);
         } catch (Exception e) {
             System.err.println(e.getMessage());
             return 1;

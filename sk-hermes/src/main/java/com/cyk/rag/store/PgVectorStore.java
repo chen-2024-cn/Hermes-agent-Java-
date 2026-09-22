@@ -55,7 +55,10 @@ public class PgVectorStore implements VectorStore {
             stmt.execute(sql);
             logger.info("RAG schema initialized");
         } catch (SQLException e) {
-            logger.error("Failed to init RAG schema", e);
+            // 可预期的环境缺依赖（如 pgvector 未启动）属于降级路径，不打堆栈；
+            // 堆栈统一记录在 DEBUG 级别，排查时设 HERMES_LOG_LEVEL=DEBUG 即可看到
+            logger.warn("RAG schema init failed: {}", e.getMessage());
+            logger.debug("RAG schema init failure stack", e);
             throw new RuntimeException("RAG schema init failed", e);
         }
 

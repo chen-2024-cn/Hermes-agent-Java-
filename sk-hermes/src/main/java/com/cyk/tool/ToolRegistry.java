@@ -201,8 +201,13 @@ public class ToolRegistry {
 
     /**
      * 注册要使用的工具
+     *
+     * <p>接收调用方已加载好的配置，避免内部再次 {@code HermesConfig.load()}
+     * 造成双份磁盘 IO 和两份可能不一致的配置对象。</p>
+     *
+     * @param config 已加载的配置（RAG 懒加载判断依赖 rag.enabled 等字段）
      */
-    public static void initialize() {
+    public static void initialize(com.cyk.config.HermesConfig config) {
         FileTool.register(instance);
         MemoryTool.register(instance);
         SkillTool.register(instance);
@@ -211,7 +216,6 @@ public class ToolRegistry {
 
         // RAG 引擎（懒初始化：仅当配置启用且 pgvector 可用时注册）
         try {
-            com.cyk.config.HermesConfig config = com.cyk.config.HermesConfig.load();
             com.cyk.rag.RagEngine ragEngine = com.cyk.rag.RagEngine.create(config);
             if (ragEngine != null) {
                 com.cyk.tool.RagTool.setEngine(ragEngine);

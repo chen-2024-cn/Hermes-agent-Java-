@@ -24,17 +24,25 @@ public class KnowledgeExtractor {
     private final HermesConfig hermesConfig;
     private final ModelClient modelClient;
 
-    // 自动提取开关
-    private final boolean autoExtractEnabled = true;
-    // 最大提取数量
-    private final int maxInsightsPerSession = 5;
-    // 最小消息数
-    private final int minMessagesForExtraction = 1;
+    // 自动提取开关（读 config.yaml 的 extract.enabled）
+    private final boolean autoExtractEnabled;
+    // 最大提取数量（读 config.yaml 的 extract.max_insights）
+    private final int maxInsightsPerSession;
+    // 最小消息数（读 config.yaml 的 extract.min_messages）
+    private final int minMessagesForExtraction;
 
     public KnowledgeExtractor(MemoryManager memoryManager, HermesConfig hermesConfig) {
         this.memoryManager = memoryManager;
         this.hermesConfig = hermesConfig;
         this.modelClient = new ModelClient(hermesConfig);
+        // 原先这三个参数是硬编码字段，用户无法关闭自动提取或调整阈值；
+        // 现改为从配置读取，缺省时回落到与原硬编码一致的默认值，保证行为不变。
+        this.autoExtractEnabled = hermesConfig.isExtractEnabled();
+        this.maxInsightsPerSession = hermesConfig.getMaxInsightsPerSession();
+        this.minMessagesForExtraction = hermesConfig.getMinMessagesForExtraction();
+
+        logger.debug("KnowledgeExtractor 配置：enabled={}, maxInsights={}, minMessages={}",
+                autoExtractEnabled, maxInsightsPerSession, minMessagesForExtraction);
     }
 
 
@@ -43,10 +51,13 @@ public class KnowledgeExtractor {
      */
     public ExtractionResult onSessionEnd(String sessionId, List<ModelMessage> messages) {
         if (!autoExtractEnabled) {
+            logger.info("知识提取已关闭（extract.enabled=false）");
             return ExtractionResult.empty();
         }
 
-        if (messages.size() < minMessagesForExtraction) {
+        if (messages == null || messages.size() < minMessagesForExtraction) {
+            logger.debug("消息数 {} 不足提取门槛 {}，跳过知识提取",
+                    messages == null ? 0 : messages.size(), minMessagesForExtraction);
             return ExtractionResult.empty();
         }
 

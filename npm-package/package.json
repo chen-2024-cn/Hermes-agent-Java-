@@ -1,0 +1,34 @@
+{
+  "name": "sk-hermes-cli",
+  "version": "1.0.0",
+  "description": "sk-Hermes：可自我进化的 AI Agent 命令行工具（Java fat-jar 的 npm 分发壳）",
+  "keywords": [
+    "cli",
+    "ai",
+    "agent",
+    "llm",
+    "chatbot",
+    "rag",
+    "java"
+  ],
+  "license": "MIT",
+  "bin": {
+    "hermes": "bin/hermes.js",
+    "sk-hermes": "bin/hermes.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "jar/",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "hermes": {
+    "jarUrl": "https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v1.0.0/hermes.jar"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

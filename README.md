@@ -101,7 +101,7 @@ cd Hermes-agent-Java-/sk-hermes
 
 ### 2. 配置 API Key
 
-首次运行会自动生成默认配置，也可手动创建 `~/.hermes/config.yml`：
+首次运行会自动生成默认配置，也可手动创建 `~/.skhermes/config.yaml`：
 
 ```yaml
 model:
@@ -109,11 +109,29 @@ model:
   base_url: https://api.deepseek.com
   api_key: your-deepseek-api-key
 
+# 模型别名档案：CLI 用 -m <alias> 快速切换
+# 只写与顶层不同的字段，api_key/base_url 自动继承顶层 model 段
+models:
+  fast:
+    model: deepseek-chat
+    temperature: 0.3
+  pro:
+    model: deepseek-v4-pro
+    temperature: 0.7
+
 agent:
   max_turns: 30
   temperature: 0.7
   max_tokens: 4096
+
+# 知识提取（会话结束时的自我进化行为）
+extract:
+  enabled: true
+  max_insights: 5
+  min_messages: 1
 ```
+
+> ⚠️ 注意路径是 `~/.skhermes/`（目录名 `DEFAULT_HERMES_HOME = ".skhermes"`），配置文件名为 `config.yaml`，不是 `config.yml`。也可通过环境变量 `HERMES_HOME` 覆盖整个根目录位置。
 
 ### 3. 编译运行
 
@@ -121,13 +139,26 @@ agent:
 # 编译
 mvn clean compile
 
-# 运行对话
-mvn exec:java -Dexec.mainClass="com.cyk.HermesAgent" -Dexec.args="chat"
+# 运行对话（指定模型别名 / 温度）
+mvn exec:java -Dexec.mainClass="com.cyk.HermesAgent" -Dexec.args="chat -m fast -t 0.3"
 
 # 或打包为 fat jar
 mvn clean package
 java -jar target/sk-hermes-1.0-SNAPSHOT.jar chat
 ```
+
+### 命令行用法
+
+| 命令 | 说明 |
+|------|------|
+| `sk-hermes chat` | 开始新对话 |
+| `sk-hermes chat -m fast` | 用 models 段的别名启动（也接受真实模型名，如 `-m deepseek-chat`） |
+| `sk-hermes chat -t 0.3` | 覆盖温度（仅本次运行生效，不写回配置文件） |
+| `sk-hermes sessions` | 列出全部历史会话（按最近活跃排序） |
+| `sk-hermes resume <会话ID>` | 恢复指定会话继续对话 |
+| `sk-hermes resume --last` | 恢复最近一次会话（等价于不带参数） |
+
+> 每次 `chat` 会话的 ID 形如 `cli3f8a1b2c`，退出时自动持久化到 `~/.skhermes/memory/sessions/`。用 `sessions` 查看、`resume` 恢复，即可跨进程继续之前的对话上下文。
 
 ---
 
@@ -168,7 +199,7 @@ HybridSearcher ──→ Reranker ──→ 最终结果
 
 ### 启用 RAG
 
-在 `~/.hermes/config.yml` 中设置：
+在 `~/.skhermes/config.yaml` 中设置：
 
 ```yaml
 rag:
@@ -199,9 +230,10 @@ rag:
 
 | 记忆类型 | 存储路径 | 用途 |
 |----------|----------|------|
-| 项目记忆 | `.hermes/memories/MEMORY.md` | 项目上下文、架构决策 |
-| 用户画像 | `.hermes/memories/USER.md` | 你的偏好、习惯、背景 |
-| 轨迹记录 | `.hermes/trajectories/` | 对话轨迹，用于知识提取 |
+| 项目记忆 | `~/.skhermes/memories/MEMORY.md` | 项目上下文、架构决策 |
+| 用户画像 | `~/.skhermes/memories/USER.md` | 你的偏好、习惯、背景 |
+| 轨迹记录 | `~/.skhermes/trajectories/` | 对话轨迹，用于知识提取 |
+| 会话历史 | `~/.skhermes/memory/sessions/` | 可用 `sessions` 列出、`resume` 恢复 |
 
 记忆文件使用 Markdown 格式，你随时可以手动编辑。
 
