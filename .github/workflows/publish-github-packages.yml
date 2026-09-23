@@ -1,0 +1,42 @@
+name: Publish to GitHub Packages
+
+# 双触发：手动运行（首次/补发）+ 推送 v* 标签（随版本自动发）
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+# GITHUB_TOKEN 权限：读代码 + 写 npm 包
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish-gpr:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: npm-package
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node（registry 指向 GitHub Packages）
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+
+      # GitHub Packages 的 npm registry 强制要求 scoped 包名（@owner/name），
+      # 且 owner 必须与仓库归属一致。主包在 npmjs 上叫 sk-hermes-cli（不能动），
+      # 故此处仅在 CI 内把 name 临时改写为 @<owner>/sk-hermes-cli 再发布。
+      - name: 改写包名为 scoped 名称（仅 CI 内生效）
+        run: |
+          node -e "const fs=require('fs');const p='package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.name='@${{ github.repository_owner }}/'+j.name;fs.writeFileSync(p,JSON.stringify(j,null,2));console.log('published name =>',j.name)"
+
+      # publishConfig 确保只推到 GitHub Packages，不会误推 npmjs
+      - name: Publish
+        run: npm publish --registry=https://npm.pkg.github.com
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

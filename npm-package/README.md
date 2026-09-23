@@ -20,6 +20,64 @@ hermes          # 任意目录直接对话，模型以当前目录为项目根
 - 首次运行前配置 `~/.skhermes/config.yaml` 的 `model.api_key`
 - 能访问 GitHub（下载 jar）；被墙时可设 `SKHERMES_JAR_URL` 指向镜像，或 `SKHERMES_JAR` 指向本地文件
 
+### 🇨🇳 国内网络加速（强烈建议）
+
+jar 托管在 GitHub Release，**直连实测仅 ~95 KB/s**（45 MB 要 8 分钟，且易被 Connection reset 打断）；
+走镜像可达 **~1.5 MB/s**（30 秒内完成）：
+
+| 下载方式 | 实测速度 |
+|---|---|
+| GitHub 直连 | ~95 KB/s（经常中途断流） |
+| `gh-proxy.com` 镜像 | **~1.5 MB/s**（推荐） |
+| `ghfast.top` 镜像 | ~620 KB/s |
+| `ghproxy.net` 镜像 | ~250 KB/s |
+
+用法：**安装前**设一次环境变量即可，postinstall 与首次运行的懒下载都会读它：
+
+```powershell
+# PowerShell
+$env:SKHERMES_JAR_URL = "https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v1.0.0/hermes.jar"
+npm install -g sk-hermes-cli
+```
+
+```bat
+:: CMD
+set SKHERMES_JAR_URL=https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v1.0.0/hermes.jar
+npm install -g sk-hermes-cli
+```
+
+```bash
+# bash / zsh
+export SKHERMES_JAR_URL="https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v1.0.0/hermes.jar"
+npm i -g sk-hermes-cli
+```
+
+> 已经装完包但 jar 没下下来？不必重装——直接敲 `hermes`，它会自动补下载（带 5 次重试 + 递增退避）。
+> 也可手动下载 jar 后放到包内 `jar/hermes.jar`，或设 `SKHERMES_JAR` 指向它。
+> 注意：镜像 URL 里的版本段（`v1.0.0`）需与包内 `hermes.jarUrl` 的版本一致。
+
+### 两个发布渠道
+
+| 渠道 | 包名 | 安装方式 | 适用场景 |
+|---|---|---|---|
+| **npmjs**（推荐） | `sk-hermes-cli` | `npm install -g sk-hermes-cli` | 公众使用，**匿名安装、零配置** |
+| **GitHub Packages** | `@chen-2024-cn/sk-hermes-cli` | 见下方 | 仓库版本管理 / CI |
+
+> ⚠️ GitHub Packages 的 npm registry **即使包是 public，安装时也强制要求 token**
+> （与 npmjs 匿名可装不同）。若只是自己或公众使用，**首选 npmjs 渠道**。
+
+**从 GitHub Packages 安装**（需先在 GitHub → Settings → Developer settings → Personal access tokens 建一个含 `read:packages` 的 PAT）：
+
+```bash
+# 在项目或用户目录建 .npmrc，绑定 scope 到 GitHub Packages
+echo "@chen-2024-cn:registry=https://npm.pkg.github.com" >> .npmrc
+echo "//npm.pkg.github.com/:_authToken=你的PAT" >> .npmrc
+
+npm install -g @chen-2024-cn/sk-hermes-cli
+```
+
+该 scoped 包由 `.github/workflows/publish-github-packages.yml` 自动发布——推送 `v*` 标签或手动运行 workflow 即触发，无需本地 token（用 Actions 内置 `GITHUB_TOKEN`）。
+
 ### 使用
 
 ```bash
