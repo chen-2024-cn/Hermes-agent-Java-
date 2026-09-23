@@ -26,6 +26,10 @@
   "hermes": {
     "jarUrl": "https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v1.0.1/hermes.jar"
   },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
   "engines": {
     "node": ">=18"
   }
