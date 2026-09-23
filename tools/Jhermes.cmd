@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================
-rem  hermes CLI launcher
+rem  Jhermes CLI launcher
 rem  Forces UTF-8 for file encoding and console output (JDK 19+)
 rem ============================================================
 setlocal

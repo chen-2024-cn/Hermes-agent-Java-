@@ -4,7 +4,7 @@
  *
  * 被两处调用：
  *   - scripts/postinstall.js：安装时 best-effort 预下载（可能被 npm allow-scripts 策略拦截）
- *   - bin/hermes.js：首次运行时懒加载兜底（不依赖任何安装脚本，最可靠）
+ *   - bin/jhermes.js：首次运行时懒加载兜底（不依赖任何安装脚本，最可靠）
  *
  * 设计要点（针对不稳定网络，尤其国内访问 GitHub Release CDN 易被 Connection reset）：
  *   - 整包重试 + 递增退避（重试窗口内大概率能撞上一次通畅）

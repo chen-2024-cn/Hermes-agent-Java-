@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * hermes CLI 入口（npm bin shim）。
+ * Jhermes CLI 入口（npm bin shim）。
  *
  * 职责链：定位 hermes.jar（找不到则懒加载下载兜底）→ 定位 java → spawn 子进程
  *
  * 关键点：
  *   - jar 懒下载：不依赖 postinstall（npm 新版本可能拦截安装脚本），首次运行发现无 jar
  *     时现场下载（复用 scripts/download-jar.js 的重试逻辑），成功后才 spawn Java
+ *   - 命令名 Jhermes 由 package.json 的 bin 字段注册（npm 据此生成 shim）
  *   - stdio:'inherit' 让 Java 进程直接接管终端（交互式对话、Ctrl+C 都正常）
  *   - 透传退出码，保证脚本化调用（if errorlevel 1）语义不被破坏
  */
@@ -62,7 +63,7 @@ async function main() {
   }
 
   // Windows 控制台默认代码页是 GBK，Java 侧用 -Dstdout.encoding=UTF-8 写出 UTF-8 字节，
-  // 必须把控制台代码页也切到 UTF-8，两边编码对齐才不乱码（与 hermes.cmd 的 chcp 65001 同理）。
+  // 必须把控制台代码页也切到 UTF-8，两边编码对齐才不乱码（与 Jhermes.cmd 的 chcp 65001 同理）。
   // chcp 是 chcp.com 这个真实可执行文件，spawnSync 不带 shell 时必须写全名。
   if (process.platform === 'win32') {
     try {

@@ -69,7 +69,7 @@
           <programs>
             <program>
               <mainClass>com.cyk.HermesAgent</mainClass>
-              <name>sk-hermes</name>
+              <name>Jhermes</name>
             </program>
           </programs>
         </configuration>

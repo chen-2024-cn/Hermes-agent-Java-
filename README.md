@@ -95,14 +95,14 @@ npm install -g sk-hermes-cli
 ```
 
 - 前置：**JDK 21+**（`java` 在 PATH 中，或设置 `JAVA_HOME`）
-- 首次运行 `hermes` 会自动从 GitHub Release 下载 ~45 MB 的 `hermes.jar` 再启动
+- 首次运行 `Jhermes` 会自动从 GitHub Release 下载 ~45 MB 的 `hermes.jar` 再启动
 - 🇨🇳 国内网络建议在安装前设置 `SKHERMES_JAR_URL` 指向镜像加速，详见 [npm-package/README.md](npm-package/README.md)
 
 安装后，在任意项目目录直接：
 
 ```bash
-hermes          # 就当前目录与模型对话，模型自动以当前目录为项目根
-hermes --help   # 查看全部子命令
+Jhermes          # 就当前目录与模型对话，模型自动以当前目录为项目根
+Jhermes --help   # 查看全部子命令
 ```
 
 > 需要改源码、调试或二次开发，请继续下面的「环境要求 → 克隆 → 配置 → 编译」步骤。
@@ -172,12 +172,13 @@ java -jar target/sk-hermes-1.0-SNAPSHOT.jar chat
 
 | 命令 | 说明 |
 |------|------|
-| `sk-hermes chat` | 开始新对话 |
-| `sk-hermes chat -m fast` | 用 models 段的别名启动（也接受真实模型名，如 `-m deepseek-chat`） |
-| `sk-hermes chat -t 0.3` | 覆盖温度（仅本次运行生效，不写回配置文件） |
-| `sk-hermes sessions` | 列出全部历史会话（按最近活跃排序） |
-| `sk-hermes resume <会话ID>` | 恢复指定会话继续对话 |
-| `sk-hermes resume --last` | 恢复最近一次会话（等价于不带参数） |
+| `Jhermes` | 直接开始新对话（不带子命令即进入 chat） |
+| `Jhermes chat` | 开始新对话 |
+| `Jhermes chat -m fast` | 用 models 段的别名启动（也接受真实模型名，如 `-m deepseek-chat`） |
+| `Jhermes chat -t 0.3` | 覆盖温度（仅本次运行生效，不写回配置文件） |
+| `Jhermes sessions` | 列出全部历史会话（按最近活跃排序） |
+| `Jhermes resume <会话ID>` | 恢复指定会话继续对话 |
+| `Jhermes resume --last` | 恢复最近一次会话（等价于不带参数） |
 
 > 每次 `chat` 会话的 ID 形如 `cli3f8a1b2c`，退出时自动持久化到 `~/.skhermes/memory/sessions/`。用 `sessions` 查看、`resume` 恢复，即可跨进程继续之前的对话上下文。
 
