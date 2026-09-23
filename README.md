@@ -86,11 +86,35 @@ sk-hermes/
 
 ## 快速开始
 
+### 通过 npm 安装（推荐）
+
+命令行工具 **仅在 npmjs 官方源发布**（不使用 GitHub Packages 等其他渠道），一条命令全局安装：
+
+```bash
+npm install -g sk-hermes-cli
+```
+
+- 前置：**JDK 21+**（`java` 在 PATH 中，或设置 `JAVA_HOME`）
+- 首次运行 `hermes` 会自动从 GitHub Release 下载 ~45 MB 的 `hermes.jar` 再启动
+- 🇨🇳 国内网络建议在安装前设置 `SKHERMES_JAR_URL` 指向镜像加速，详见 [npm-package/README.md](npm-package/README.md)
+
+安装后，在任意项目目录直接：
+
+```bash
+hermes          # 就当前目录与模型对话，模型自动以当前目录为项目根
+hermes --help   # 查看全部子命令
+```
+
+> 需要改源码、调试或二次开发，请用下面的「从源码构建」。
+
+### 从源码构建
+
 ### 环境要求
 
 - **JDK 21** 或更高版本
 - **Maven 3.8+**
 - **PostgreSQL + pgvector 扩展**（仅 RAG 功能需要）
+
 
 ### 1. 克隆项目
 
