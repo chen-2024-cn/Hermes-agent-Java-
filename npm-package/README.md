@@ -2,7 +2,7 @@
 
 `sk-Hermes`（Java AI Agent）的命令行工具。装完即可在任意目录敲 `hermes`，像 Claude Code 一样对话。
 
-> 这是一个 **JS → Java 桥接种子**：`bin/hermes.js` 启动 `java -jar hermes.jar`。
+> 这是一个 **JS → Java 桥接壳**：`bin/hermes.js` 启动 `java -jar hermes.jar`。
 > jar 不打进 npm 包（包仅 ~20KB），而是首次使用时从 GitHub Release 自动下载。
 
 ---
