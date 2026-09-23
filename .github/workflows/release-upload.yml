@@ -1,0 +1,52 @@
+name: Build and Upload Release Jar
+
+# 手动触发：在云端 runner 上构建 hermes.jar 并上传到指定 Release tag。
+# 用途：绕开本机到 uploads.github.com 的网络不稳定（大文件 connection reset），
+#      由 runner（同区域访问 GitHub）秒传。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '目标 Release tag（已存在则上传资产，不存在则自动创建）'
+        required: true
+        default: 'v1.0.1'
+
+permissions:
+  contents: write   # 上传 Release 资产必需
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build fat jar (slimmed)
+        run: mvn -f sk-hermes/pom.xml clean package -DskipTests -q
+
+      - name: 复制为 hermes.jar 并核验体积
+        run: |
+          cp sk-hermes/target/sk-hermes-1.0-SNAPSHOT.jar hermes.jar
+          echo "jar size: $(du -h hermes.jar | cut -f1)"
+          # 瘦身核验：非 win32 的 Playwright 驱动应已被 shade 排除，jar 应 ~45MB 而非 ~182MB
+          SZ=$(stat -c%s hermes.jar)
+          echo "bytes=$SZ"
+          if [ "$SZ" -gt 120000000 ]; then echo "警告: jar 异常偏大，瘦身过滤器可能未生效"; fi
+
+      - name: Upload to Release (创建或用已有 tag)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          # tag 不存在则先建（已存在时 gh release upload 直接复用）
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "sk-Hermes $TAG" --generate-notes
+          gh release upload "$TAG" hermes.jar --clobber
+          echo "==== 上传后资产核验 ===="
+          gh release view "$TAG" --json assets --jq '.assets[]|{name,size,state}'
