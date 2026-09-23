@@ -9,7 +9,7 @@ on:
       tag:
         description: '目标 Release tag（已存在则上传资产，不存在则自动创建）'
         required: true
-        default: 'v1.0.1'
+        default: 'v2.0.1'
 
 permissions:
   contents: write   # 上传 Release 资产必需

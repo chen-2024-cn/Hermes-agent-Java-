@@ -29,19 +29,19 @@ jar 托管在 GitHub Release，**直连实测仅 ~95 KB/s**（45 MB 要 8 分钟
 
 ```powershell
 # PowerShell
-$env:SKHERMES_JAR_URL = "https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v1.0.1/hermes.jar"
+$env:SKHERMES_JAR_URL = "https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.0.1/hermes.jar"
 npm install -g sk-hermes-cli
 ```
 
 ```bat
 :: CMD
-set SKHERMES_JAR_URL=https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v1.0.1/hermes.jar
+set SKHERMES_JAR_URL=https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.0.1/hermes.jar
 npm install -g sk-hermes-cli
 ```
 
 ```bash
 # bash / zsh
-export SKHERMES_JAR_URL="https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v1.0.1/hermes.jar"
+export SKHERMES_JAR_URL="https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.0.1/hermes.jar"
 npm i -g sk-hermes-cli
 ```
 

@@ -12,7 +12,7 @@ import picocli.CommandLine;
 import java.io.IOException;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "Jhermes", mixinStandardHelpOptions = true, version = "1.0.1", description = "可自我进化的ai agent",
+@CommandLine.Command(name = "Jhermes", mixinStandardHelpOptions = true, version = "2.0.1", description = "可自我进化的ai agent",
         subcommands = {
                 ChatCommand.class,
                 SessionsCommand.class,

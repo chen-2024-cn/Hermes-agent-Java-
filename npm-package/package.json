@@ -1,6 +1,6 @@
 {
   "name": "sk-hermes-cli",
-  "version": "1.0.1",
+  "version": "2.0.1",
   "description": "sk-Hermes：可自我进化的 AI Agent 命令行工具（Java fat-jar 的 npm 分发壳）",
   "keywords": [
     "cli",
@@ -24,7 +24,7 @@
     "postinstall": "node scripts/postinstall.js"
   },
   "hermes": {
-    "jarUrl": "https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v1.0.1/hermes.jar"
+    "jarUrl": "https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.0.1/hermes.jar"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
