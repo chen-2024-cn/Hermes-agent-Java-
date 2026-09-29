@@ -62,7 +62,7 @@ Hermes 是一个运行在终端中的 AI 智能体，基于 Java 21 构建。它
 ## 架构概览
 
 ```
-sk-hermes/
+Jhermes/
 ├── agent/          # Agent 核心循环（对话→工具调用→反思）
 ├── bean/           # 数据模型（消息、会话、工具定义）
 ├── command/        # CLI 命令（picocli）
@@ -91,12 +91,12 @@ sk-hermes/
 命令行工具 **仅在 npmjs 官方源发布**（不使用 GitHub Packages 等其他渠道），一条命令全局安装：
 
 ```bash
-npm install -g sk-hermes-cli
+npm install -g j-hermes
 ```
 
 - 前置：**JDK 21+**（`java` 在 PATH 中，或设置 `JAVA_HOME`）
 - 首次运行 `Jhermes` 会自动从 GitHub Release 下载 ~45 MB 的 `hermes.jar` 再启动
-- 🇨🇳 国内网络建议在安装前设置 `SKHERMES_JAR_URL` 指向镜像加速，详见 [npm-package/README.md](npm-package/README.md)
+- 🇨🇳 国内网络建议在安装前设置 `JHERMES_JAR_URL` 指向镜像加速，详见 [npm-package/README.md](npm-package/README.md)
 
 安装后，在任意项目目录直接：
 
@@ -117,12 +117,12 @@ Jhermes --help   # 查看全部子命令
 
 ```bash
 git clone https://github.com/chen-2024-cn/Hermes-agent-Java-.git
-cd Hermes-agent-Java-/sk-hermes
+cd Hermes-agent-Java-/Jhermes
 ```
 
 ### 2. 配置 API Key
 
-首次运行会自动生成默认配置，也可手动创建 `~/.skhermes/config.yaml`：
+首次运行会自动生成默认配置，也可手动创建 `~/.jhermes/config.yaml`：
 
 ```yaml
 model:
@@ -149,10 +149,10 @@ agent:
 extract:
   enabled: true
   max_insights: 5
-  min_messages: 1
+  min_messages: 4
 ```
 
-> ⚠️ 注意路径是 `~/.skhermes/`（目录名 `DEFAULT_HERMES_HOME = ".skhermes"`），配置文件名为 `config.yaml`，不是 `config.yml`。也可通过环境变量 `HERMES_HOME` 覆盖整个根目录位置。
+> ⚠️ 注意路径是 `~/.jhermes/`（目录名 `DEFAULT_HERMES_HOME = ".jhermes"`），配置文件名为 `config.yaml`，不是 `config.yml`。从旧版本（`~/.skhermes/`）升级时，首次启动会自动把旧目录整体迁移到新目录，配置/记忆/历史会话全部保留。也可通过环境变量 `HERMES_HOME` 覆盖整个根目录位置。
 
 ### 3. 编译运行
 
@@ -165,7 +165,7 @@ mvn exec:java -Dexec.mainClass="com.cyk.HermesAgent" -Dexec.args="chat -m fast -
 
 # 或打包为 fat jar
 mvn clean package
-java -jar target/sk-hermes-1.0-SNAPSHOT.jar chat
+java -jar target/Jhermes-1.0-SNAPSHOT.jar chat
 ```
 
 ### 命令行用法
@@ -180,7 +180,7 @@ java -jar target/sk-hermes-1.0-SNAPSHOT.jar chat
 | `Jhermes resume <会话ID>` | 恢复指定会话继续对话 |
 | `Jhermes resume --last` | 恢复最近一次会话（等价于不带参数） |
 
-> 每次 `chat` 会话的 ID 形如 `cli3f8a1b2c`，退出时自动持久化到 `~/.skhermes/memory/sessions/`。用 `sessions` 查看、`resume` 恢复，即可跨进程继续之前的对话上下文。
+> 每次 `chat` 会话的 ID 形如 `cli3f8a1b2c`，退出时自动持久化到 `~/.jhermes/memory/sessions/`。用 `sessions` 查看、`resume` 恢复，即可跨进程继续之前的对话上下文。
 
 ---
 
@@ -221,15 +221,45 @@ HybridSearcher ──→ Reranker ──→ 最终结果
 
 ### 启用 RAG
 
-在 `~/.skhermes/config.yaml` 中设置：
+RAG 依赖 PostgreSQL + pgvector 向量数据库。推荐用项目自带的 Docker Compose 一键拉起：
+
+#### 方式一：Docker Compose 一键部署（推荐）
+
+前提：已安装 Docker Desktop（Windows）或在 WSL Ubuntu 里装好 Docker Engine。
+
+```bash
+# 在仓库根目录执行（Windows 可直接用一键脚本，自动探测 Docker Desktop / WSL）
+powershell -ExecutionPolicy Bypass -File tools\start-rag.ps1
+
+# 或手动（Docker Desktop / 纯 Linux）
+docker compose up -d
+
+# 或 WSL 内
+docker compose up -d        # 需在仓库目录（WSL 侧 /mnt/c/... 路径）下执行
+```
+
+容器会启动 PostgreSQL 16 + pgvector，账号与默认配置对齐（`hermes` / `hermes123` / `hermes_rag`），数据存于命名卷 `hermes_pgdata`（`docker compose down` 不丢，`down -v` 才清除）。
+
+**端口冲突**：若宿主机 5432 已被占用（比如跑了别的 postgres），在仓库根目录建 `.env` 写 `PG_PORT=5433`，并把下面配置的 `url` 端口同步改掉，再重跑脚本即可（`start-rag.ps1` 会自动预检并给出提示）。
+
+**停止 / 清理**：
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools\start-rag.ps1 -Down   # 停止（保留数据）
+docker compose down -v                                              # 彻底删除（含数据卷）
+```
+
+#### 方式二：自装 PostgreSQL
+
+自行安装 PostgreSQL 14+，执行 `CREATE EXTENSION vector;`，然后在 `~/.jhermes/config.yaml` 中设置：
 
 ```yaml
 rag:
   enabled: true
   pgvector:
-    url: jdbc:postgresql://localhost:5432/hermes_rag
+    url: jdbc:postgresql://localhost:5432/hermes_rag   # 用了 PG_PORT=5433 就改成 5433
     username: hermes
-    password: your-password
+    password: your-password                            # Compose 默认为 hermes123
   embedding:
     model: BAAI/bge-m3
     base_url: https://api.siliconflow.cn
@@ -244,6 +274,18 @@ rag:
     default_top_k: 5
 ```
 
+> 表结构无需手工创建：Jhermes 启动时 `PgVectorStore.initSchema()` 会自动建表建索引。
+> pgvector 连不上时 RAG 优雅降级（打一行 WARN 并禁用 rag_index/rag_search），不影响对话功能。
+
+#### 全量容器化（可选）
+
+想在纯容器环境（WSL/Linux/服务器）里连 Jhermes 本体一起跑：
+
+```bash
+docker build -t jhermes .
+docker run --rm -it -v ~/.jhermes:/root/.jhermes --network host jhermes
+```
+
 ---
 
 ## 记忆系统
@@ -252,10 +294,10 @@ rag:
 
 | 记忆类型 | 存储路径 | 用途 |
 |----------|----------|------|
-| 项目记忆 | `~/.skhermes/memories/MEMORY.md` | 项目上下文、架构决策 |
-| 用户画像 | `~/.skhermes/memories/USER.md` | 你的偏好、习惯、背景 |
-| 轨迹记录 | `~/.skhermes/trajectories/` | 对话轨迹，用于知识提取 |
-| 会话历史 | `~/.skhermes/memory/sessions/` | 可用 `sessions` 列出、`resume` 恢复 |
+| 项目记忆 | `~/.jhermes/memories/MEMORY.md` | 项目上下文、架构决策 |
+| 用户画像 | `~/.jhermes/memories/USER.md` | 你的偏好、习惯、背景 |
+| 轨迹记录 | `~/.jhermes/trajectories/` | 对话轨迹，用于知识提取 |
+| 会话历史 | `~/.jhermes/memory/sessions/` | 可用 `sessions` 列出、`resume` 恢复 |
 
 记忆文件使用 Markdown 格式，你随时可以手动编辑。
 

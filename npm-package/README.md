@@ -1,6 +1,6 @@
-# sk-hermes-cli
+# j-hermes
 
-`sk-Hermes`（Java AI Agent）的命令行工具。装完即可在任意目录敲 `Jhermes`，像 Claude Code 一样对话。
+`Jhermes`（Java AI Agent）的命令行工具。装完即可在任意目录敲 `Jhermes`，像 Claude Code 一样对话。
 
 > 这是一个 **JS → Java 桥接壳**：`bin/jhermes.js` 启动 `java -jar hermes.jar`。
 > jar 不打进 npm 包（包仅 ~20KB），而是首次使用时从 GitHub Release 自动下载。
@@ -12,12 +12,12 @@
 **本包只在 npmjs 官方源发布**，直接安装即可：
 
 ```bash
-npm install -g sk-hermes-cli
+npm install -g j-hermes
 ```
 
 ### 前置依赖
 - **JDK 21+**（`java` 在 PATH 中，或设置 `JAVA_HOME`）
-- 首次运行前，在 `~/.skhermes/config.yaml` 填入 `model.api_key`
+- 首次运行前，在 `~/.jhermes/config.yaml` 填入 `model.api_key`
 
 ---
 
@@ -29,20 +29,20 @@ jar 托管在 GitHub Release，**直连实测仅 ~95 KB/s**（45 MB 要 8 分钟
 
 ```powershell
 # PowerShell
-$env:SKHERMES_JAR_URL = "https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.0.1/hermes.jar"
-npm install -g sk-hermes-cli
+$env:JHERMES_JAR_URL = "https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.0.1/hermes.jar"
+npm install -g j-hermes
 ```
 
 ```bat
 :: CMD
-set SKHERMES_JAR_URL=https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.0.1/hermes.jar
-npm install -g sk-hermes-cli
+set JHERMES_JAR_URL=https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.0.1/hermes.jar
+npm install -g j-hermes
 ```
 
 ```bash
 # bash / zsh
-export SKHERMES_JAR_URL="https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.0.1/hermes.jar"
-npm i -g sk-hermes-cli
+export JHERMES_JAR_URL="https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.0.1/hermes.jar"
+npm i -g j-hermes
 ```
 
 > 装完 jar 没下下来？不必重装——直接敲 `Jhermes` 会自动补下载（带 5 次重试）。

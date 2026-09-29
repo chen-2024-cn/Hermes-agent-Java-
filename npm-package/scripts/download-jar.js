@@ -20,7 +20,10 @@ const http = require('http');
 const MAX_REDIRECTS = 5;
 const REQ_TIMEOUT_MS = 60000;
 
-/** 解析下载地址：环境变量 SKHERMES_JAR_URL 优先，其次 package.json 内置 hermes.jarUrl。 */
+/**
+ * 解析下载地址：环境变量 JHERMES_JAR_URL 优先（回退旧名 SKHERMES_JAR_URL），
+ * 其次 package.json 内置 hermes.jarUrl。
+ */
 function resolveJarUrl(pkgRoot) {
   let pkgJson = {};
   try {
@@ -28,7 +31,8 @@ function resolveJarUrl(pkgRoot) {
   } catch (_) {
     /* package.json 读失败则仅依赖环境变量 */
   }
-  return process.env.SKHERMES_JAR_URL || (pkgJson.hermes && pkgJson.hermes.jarUrl) || '';
+  const envUrl = process.env.JHERMES_JAR_URL || process.env.SKHERMES_JAR_URL;
+  return envUrl || (pkgJson.hermes && pkgJson.hermes.jarUrl) || '';
 }
 
 /**
@@ -47,7 +51,7 @@ function resolveRedirect(base, location) {
 function downloadOnce(url, dest, redirects) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : http;
-    const req = mod.get(url, { headers: { 'User-Agent': 'sk-hermes-npm' } }, (res) => {
+    const req = mod.get(url, { headers: { 'User-Agent': 'j-hermes-npm' } }, (res) => {
       const code = res.statusCode || 0;
       if (code >= 300 && code < 400 && res.headers.location) {
         res.resume();
@@ -90,7 +94,7 @@ function downloadOnce(url, dest, redirects) {
  * @param {(msg:string)=>void} [opts.log] 日志输出（默认写 stdout）
  * @returns {Promise<boolean>} 是否最终拿到了 jar（true=可用；false=下载失败，调用方应给出人话提示）
  */
-async function ensureJar({ dest, url, maxAttempts = 5, log = (m) => process.stdout.write(`[sk-hermes] ${m}\n`) }) {
+async function ensureJar({ dest, url, maxAttempts = 5, log = (m) => process.stdout.write(`[Jhermes] ${m}\n`) }) {
   // 已有可用 jar（>1MB，排除空文件/半截文件）→ 直接用
   if (fs.existsSync(dest)) {
     try {
@@ -100,8 +104,8 @@ async function ensureJar({ dest, url, maxAttempts = 5, log = (m) => process.stdo
     }
   }
   if (!url) {
-    log('未找到 jar 下载地址（package.json 的 hermes.jarUrl 与环境变量 SKHERMES_JAR_URL 均未设置）。');
-    log('请设 SKHERMES_JAR 指向你本地构建的 jar，或将 jar 放到 ' + dest);
+    log('未找到 jar 下载地址（package.json 的 hermes.jarUrl 与环境变量 JHERMES_JAR_URL 均未设置）。');
+    log('请设 JHERMES_JAR 指向你本地构建的 jar，或将 jar 放到 ' + dest);
     return false;
   }
 
@@ -126,7 +130,7 @@ async function ensureJar({ dest, url, maxAttempts = 5, log = (m) => process.stdo
   log('自动下载失败（可能是网络无法稳定访问 GitHub CDN）。可手动解决：');
   log(`  用浏览器/下载工具获取 ${url}`);
   log(`  放到 ${dest}`);
-  log(`  或设置环境变量 SKHERMES_JAR 指向该 jar 文件。`);
+  log(`  或设置环境变量 JHERMES_JAR 指向该 jar 文件。`);
   return false;
 }
 

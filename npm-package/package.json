@@ -1,7 +1,7 @@
 {
-  "name": "sk-hermes-cli",
+  "name": "j-hermes",
   "version": "2.0.1",
-  "description": "sk-Hermes：可自我进化的 AI Agent 命令行工具（Java fat-jar 的 npm 分发壳）",
+  "description": "Jhermes：可自我进化的 AI Agent 命令行工具（Java fat-jar 的 npm 分发壳）",
   "keywords": [
     "cli",
     "ai",

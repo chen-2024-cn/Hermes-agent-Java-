@@ -17,7 +17,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$jarPath  = Join-Path $repoRoot 'sk-hermes\target\sk-hermes-1.0-SNAPSHOT.jar'
+$jarPath  = Join-Path $repoRoot 'Jhermes\target\Jhermes-1.0-SNAPSHOT.jar'
 $pkgJson  = Join-Path $repoRoot 'npm-package\package.json'
 
 # ---------- 0. 读取版本号 ----------
@@ -53,11 +53,11 @@ if (-not (Test-Path $jarPath)) {
     Write-Host "[release] 未找到 jar，开始构建..." -ForegroundColor Yellow
     $mvn = Get-Command mvn -ErrorAction SilentlyContinue
     if ($mvn) {
-        & mvn -f (Join-Path $repoRoot 'sk-hermes\pom.xml') clean package -DskipTests -q
+        & mvn -f (Join-Path $repoRoot 'Jhermes\pom.xml') clean package -DskipTests -q
     } else {
         $wrapperMvn = Get-ChildItem "$env:USERPROFILE\.m2\wrapper\dists" -Recurse -Filter mvn.cmd -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $wrapperMvn) { throw "找不到 mvn 也找不到 wrapper 里的 mvn.cmd，请先手动构建 jar" }
-        & $wrapperMvn.FullName -f (Join-Path $repoRoot 'sk-hermes\pom.xml') clean package -DskipTests -q
+        & $wrapperMvn.FullName -f (Join-Path $repoRoot 'Jhermes\pom.xml') clean package -DskipTests -q
     }
     if (-not (Test-Path $jarPath)) { throw "构建后仍未找到 $jarPath" }
 }
@@ -69,8 +69,8 @@ if ($releaseExists) {
     Write-Host "[release] Release $tag 已存在，跳过创建" -ForegroundColor Yellow
 } else {
     gh release create $tag `
-        --title "sk-Hermes $tag" `
-        --notes "hermes.jar for npm distribution (sk-hermes-cli). Download by postinstall automatically." `
+        --title "Jhermes $tag" `
+        --notes "hermes.jar for npm distribution (j-hermes). Download by postinstall automatically." `
         --target master
     if ($LASTEXITCODE -ne 0) { throw "gh release create 失败" }
     Write-Host "[release] 已创建 $tag" -ForegroundColor Green

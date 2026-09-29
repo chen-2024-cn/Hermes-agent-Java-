@@ -1,10 +1,10 @@
 ﻿# install-hermes.ps1
-# 一键把 sk-hermes 安装为全局命令 `Jhermes`，并注册文件夹右键菜单「在此处使用 Jhermes 聊天」
+# 一键把 Jhermes 安装为全局命令 `Jhermes`，并注册文件夹右键菜单「在此处使用 Jhermes 聊天」
 # 用法: powershell -ExecutionPolicy Bypass -File install-hermes.ps1
 $ErrorActionPreference = 'Stop'
 
 $repoRoot  = Split-Path -Parent $PSScriptRoot          # 项目根目录
-$jarSrc    = Join-Path $repoRoot 'sk-hermes\target\sk-hermes-1.0-SNAPSHOT.jar'
+$jarSrc    = Join-Path $repoRoot 'Jhermes\target\Jhermes-1.0-SNAPSHOT.jar'
 $launcherSrc = Join-Path $repoRoot 'tools\Jhermes.cmd'
 $installDir = Join-Path $env:USERPROFILE '.hermes'      # C:\Users\<you>\.hermes
 $jarDst     = Join-Path $installDir 'hermes.jar'

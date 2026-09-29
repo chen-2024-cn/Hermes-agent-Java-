@@ -11,6 +11,7 @@
  *   - 命令名 Jhermes 由 package.json 的 bin 字段注册（npm 据此生成 shim）
  *   - stdio:'inherit' 让 Java 进程直接接管终端（交互式对话、Ctrl+C 都正常）
  *   - 透传退出码，保证脚本化调用（if errorlevel 1）语义不被破坏
+ *   - 环境变量 JHERMES_JAR 优先，回退旧名 SKHERMES_JAR（改名后旧变量仍可用）
  */
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
@@ -21,13 +22,13 @@ const PKG_ROOT = path.join(__dirname, '..');
 
 /**
  * 按优先级定位 jar：
- * 1. SKHERMES_JAR 环境变量（显式指定，开发/多版本共存用）
+ * 1. JHERMES_JAR 环境变量（显式指定，开发/多版本共存用）；回退旧名 SKHERMES_JAR
  * 2. 包内 jar/hermes.jar（捆绑发布 或 postinstall 从 Release 下载的）
  * 3. ~/.hermes/hermes.jar（兼容 install-hermes.ps1 的老安装位置）
  */
 function resolveJar() {
   const candidates = [
-    process.env.SKHERMES_JAR,
+    process.env.JHERMES_JAR || process.env.SKHERMES_JAR,
     path.join(PKG_ROOT, 'jar', 'hermes.jar'),
     path.join(os.homedir(), '.hermes', 'hermes.jar'),
   ];
@@ -56,7 +57,7 @@ async function main() {
     const dest = path.join(PKG_ROOT, 'jar', 'hermes.jar');
     const ok = await ensureJar({ dest, url: resolveJarUrl(PKG_ROOT), maxAttempts: 5 });
     if (!ok) {
-      console.error('[sk-hermes] 无法获取 hermes.jar，退出。请按上方提示手动提供 jar 后重试。');
+      console.error('[Jhermes] 无法获取 hermes.jar，退出。请按上方提示手动提供 jar 后重试。');
       process.exit(1);
     }
     jar = dest;
@@ -91,7 +92,7 @@ async function main() {
   process.on('SIGTERM', forward);
 
   child.on('error', (err) => {
-    console.error(`[sk-hermes] 无法启动 java（${err.message}）。`);
+    console.error(`[Jhermes] 无法启动 java（${err.message}）。`);
     console.error('请确认已安装 JDK 21+ 且 java 在 PATH 中，或设置 JAVA_HOME 环境变量。');
     process.exit(1);
   });

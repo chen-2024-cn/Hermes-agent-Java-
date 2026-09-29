@@ -1,0 +1,20 @@
+# 构建上下文只保留源码与 pom，其余全部排除，加速 docker build 并避免泄漏
+target/
+**/target/
+*.jar
+*.war
+
+node_modules/
+npm-package/jar/
+
+.git/
+.idea/
+.vscode/
+.claude/
+.superpowers/
+doc/
+docs/
+*.log
+*.zip
+.DS_Store
+Thumbs.db

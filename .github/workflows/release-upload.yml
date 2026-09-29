@@ -29,11 +29,11 @@ jobs:
           cache: maven
 
       - name: Build fat jar (slimmed)
-        run: mvn -f sk-hermes/pom.xml clean package -DskipTests -q
+        run: mvn -f Jhermes/pom.xml clean package -DskipTests -q
 
       - name: 复制为 hermes.jar 并核验体积
         run: |
-          cp sk-hermes/target/sk-hermes-1.0-SNAPSHOT.jar hermes.jar
+          cp Jhermes/target/Jhermes-1.0-SNAPSHOT.jar hermes.jar
           echo "jar size: $(du -h hermes.jar | cut -f1)"
           # 瘦身核验：非 win32 的 Playwright 驱动应已被 shade 排除，jar 应 ~45MB 而非 ~182MB
           SZ=$(stat -c%s hermes.jar)
@@ -46,7 +46,7 @@ jobs:
           TAG: ${{ github.event.inputs.tag }}
         run: |
           # tag 不存在则先建（已存在时 gh release upload 直接复用）
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "sk-Hermes $TAG" --generate-notes
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Jhermes $TAG" --generate-notes
           gh release upload "$TAG" hermes.jar --clobber
           echo "==== 上传后资产核验 ===="
           gh release view "$TAG" --json assets --jq '.assets[]|{name,size,state}'

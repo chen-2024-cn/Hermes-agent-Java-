@@ -13,7 +13,7 @@ const path = require('path');
 const { ensureJar, resolveJarUrl } = require('./download-jar');
 
 process.on('uncaughtException', (err) => {
-  process.stdout.write(`[sk-hermes] postinstall 异常（已忽略，不阻断安装）：${err && err.message}\n`);
+  process.stdout.write(`[Jhermes] postinstall 异常（已忽略，不阻断安装）：${err && err.message}\n`);
   process.exit(0);
 });
 
