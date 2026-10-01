@@ -1,6 +1,7 @@
 package com.cyk.tool;
 
 import com.cyk.bean.ToolEntry;
+import com.cyk.util.SensitivePathGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -79,54 +80,20 @@ public class TerminalTool {
     private static final int COMMAND_COUNTS_LIMIT = 500;
 
     /**
-     * 敏感凭据文件/目录特征（归一化后匹配）。
-     *
-     * <p>真实事故驱动（2026-09-28）：模型搜索“知识库在哪”时随手 Get-Content 了
-     * {@code ~/.ai_tools/.meta.json}，把 Feishu auth token 明文打进对话历史并随会话持久化。
-     * 工具层必须硬拦截凭据文件读取：模型的正常任务几乎永远不需要读这些文件。</p>
-     */
-    private static final List<String> SENSITIVE_PATH_MARKERS = List.of(
-        ".ai_tools",                 // 本机 AI 工具凭据目录（.meta.json 含 auth token）
-        ".ssh",                      // SSH 密钥
-        ".gnupg",                     // GPG 密钥
-        ".aws\\credentials", ".aws/credentials",
-        ".kube\\config", ".kube/config",
-        ".docker\\config.json", ".docker/config.json",
-        ".netrc", "_netrc",
-        ".git-credentials",           // git 明文凭据
-        "id_rsa", "id_ed25519",
-        ".npmrc",                     // npm 可能含 _authToken
-        ".pypirc",
-        // Jhermes 数据目录里的 config.yaml 含模型 api_key 与 PG 口令，读取即等于泄密。
-        // 新旧目录名必须同时拦截：Constants.migrateLegacyData 迁移失败/两目录并存时，
-        // 凭据仍在旧的 .skhermes 下，只拦新名会留下真实可利用的泄露口子。
-        ".jhermes\\config.yaml", ".jhermes/config.yaml",
-        ".skhermes\\config.yaml", ".skhermes/config.yaml"
-    );
-
-    /**
      * 检查命令是否触碰敏感凭据路径（包级可见便于单测）。
      *
-     * <p>匹配要求标记后紧跟非字母数字字符（或到末尾），避免子串误伤：
-     * {@code .sshare} 包含 {@code .ssh} 字样但不是 SSH 目录，不应拦截；
-     * {@code .ssh\id_rsa} / {@code .ssh/config} 则正常命中。</p>
+     * <p>实现已下沉到 {@link SensitivePathGuard}：终端工具与文件工具
+     * （{@code read_file}/{@code write_file}/{@code grep_files}/{@code search_files}）
+     * 共享同一份黑名单，避免「终端拦了、文件工具没拦」的防护不对齐。
+     * 保留本方法是为了不破坏既有单测与本类的调用点。</p>
+     *
+     * <p>匹配规则（小写化 + 右边界校验，防 {@code .sshare} 误伤）见
+     * {@link SensitivePathGuard#check(String)}。</p>
      *
      * @return 命中的敏感标记；未命中返回 null
      */
     static String checkSensitive(String command) {
-        String normalized = command.toLowerCase(Locale.ROOT);
-        for (String marker : SENSITIVE_PATH_MARKERS) {
-            int idx = normalized.indexOf(marker);
-            while (idx >= 0) {
-                int after = idx + marker.length();
-                if (after >= normalized.length()
-                        || !Character.isLetterOrDigit(normalized.charAt(after))) {
-                    return marker;
-                }
-                idx = normalized.indexOf(marker, idx + 1);
-            }
-        }
-        return null;
+        return SensitivePathGuard.check(command);
     }
 
     private TerminalTool() {

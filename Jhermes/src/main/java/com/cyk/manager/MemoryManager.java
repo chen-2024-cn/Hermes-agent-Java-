@@ -2,6 +2,7 @@ package com.cyk.manager;
 
 import com.cyk.constant.Constants;
 import com.cyk.util.AtomicFileWriter;
+import com.cyk.util.PromptInjectionGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -11,8 +12,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -150,63 +149,9 @@ public class MemoryManager {
 
     // ==================== 安全防护 ====================
 
-    /**
-     * 威胁模式库 — 防护提示词注入攻击（Prompt Injection）
-     *
-     * <p>涵盖常见的攻击手法：</p>
-     * <ul>
-     *   <li>"ignore previous instructions" — 让模型忘记角色设定</li>
-     *   <li>"you are now <角色>" — 强制改变模型行为</li>
-     *   <li>"do not tell the user" — 教模型隐瞒用户</li>
-     *   <li>"system prompt override" — 覆盖系统提示词</li>
-     *   <li>"curl/wget + 环境变量" — 试图让模型生成恶意命令窃取敏感信息</li>
-     * </ul>
-     */
-    private static final Pattern[] THREAT_PATTERNS = {
-            // 防御：要求模型忽略之前的指令（最常见的注入手法）
-            Pattern.compile("ignore\\s+(previous|all|above|prior)\\s+instructions", Pattern.CASE_INSENSITIVE),
-            // 防御：强制改变模型身份
-            Pattern.compile("you\\s+are\\s+now\\s+", Pattern.CASE_INSENSITIVE),
-            // 防御：教模型隐瞒用户
-            Pattern.compile("do\\s+not\\s+tell\\s+the\\s+user", Pattern.CASE_INSENSITIVE),
-            // 防御：覆盖系统提示词
-            Pattern.compile("system\\s+prompt\\s+override", Pattern.CASE_INSENSITIVE),
-            // 防御：让模型无视规则
-            Pattern.compile("disregard\\s+(your|all|any)\\s+(instructions|rules|guidelines)", Pattern.CASE_INSENSITIVE),
-            // 防御：诱导模型生成恶意 curl 命令窃取环境变量中的密钥
-            Pattern.compile("curl\\s+[^\\n]*\\$\\{?\\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", Pattern.CASE_INSENSITIVE),
-            // 防御：同上，针对 wget 命令
-            Pattern.compile("wget\\s+[^\\n]*\\$\\{?\\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", Pattern.CASE_INSENSITIVE),
-    };
-
-    /**
-     * 不可见字符黑名单 — 防御隐写式提示词注入
-     *
-     * <p>这些 Unicode 控制字符肉眼不可见，但能影响文本渲染方向或起分隔作用，常用于：</p>
-     * <ul>
-     *   <li><b>伪装文件名</b> — 例：\u202E exe.txt → 渲染为 "txt.exe"，诱导用户点击</li>
-     *   <li><b>绕过安全检测</b> — 在敏感词中间插入零宽空格，使正则匹配失效</li>
-     *   <li><b>欺骗 AI</b> — 用双向控制符反转指令含义</li>
-     * </ul>
-     *
-     * <p>字符说明：</p>
-     * <table>
-     *   <tr><td>\u200B</td><td>零宽空格    </td><td>肉眼不可见，能绕过关键词检测</td></tr>
-     *   <tr><td>\u200C</td><td>零宽非连接符</td><td>同上</td></tr>
-     *   <tr><td>\u200D</td><td>零宽连接符  </td><td>同上</td></tr>
-     *   <tr><td>\u2060</td><td>词连接符    </td><td>阻止自动换行，可用于隐藏超长内容</td></tr>
-     *   <tr><td>\uFEFF</td><td>BOM标记     </td><td>字节序标记，可能干扰解析</td></tr>
-     *   <tr><td>\u202A</td><td>左到右嵌入  </td><td>强制文字从左到右排列</td></tr>
-     *   <tr><td>\u202B</td><td>右到左嵌入  </td><td>强制文字从右到左排列（阿拉伯语/希伯来语模式）</td></tr>
-     *   <tr><td>\u202C</td><td>方向恢复    </td><td>结束嵌入指令</td></tr>
-     *   <tr><td>\u202D</td><td>左到右覆盖  </td><td><b>最危险</b> — 强行反转字符显示顺序，制造视觉假象</td></tr>
-     *   <tr><td>\u202E</td><td>右到左覆盖  </td><td>同上，反转方向</td></tr>
-     * </table>
-     */
-    private static final Set<Character> INVISIBLE_CHARS = Set.of(
-            '\u200B', '\u200C', '\u200D', '\u2060', '\uFEFF',
-            '\u202A', '\u202B', '\u202C', '\u202D', '\u202E'
-    );
+    // 威胁话术正则库与不可见字符黑名单已下沉到 com.cyk.util.PromptInjectionGuard（单一事实源）：
+    // 同一条黑名单同时服务于「记忆写入硬拒」与「外部内容入口加警示」两个场景，
+    // 新增一条注入特征只需改一处，两侧同步生效。
 
     // ==================== 构造方法 ====================
 
@@ -453,7 +398,7 @@ public class MemoryManager {
     // ==================== 安全扫描 ====================
 
     /**
-     * 对新记忆进行安全扫描
+     * 对新记忆进行安全扫描（委托 {@link PromptInjectionGuard#scan(String)}）。
      *
      * <p>两层检测（任意一层命中即拒绝）：</p>
      * <ol>
@@ -461,26 +406,14 @@ public class MemoryManager {
      *   <li>正则匹配 — 是否包含提示词注入话术</li>
      * </ol>
      *
+     * <p>记忆侧的处置策略是<b>整条拒绝</b>：MEMORY.md 每轮都会拼进 System Prompt，
+     * 一次投毒就会会话会话地生效（持久化注入），宁可丢一条记忆不可放行可疑内容。</p>
+     *
      * @param content 待检测的记忆内容
      * @return null=安全通过，非null=触发拦截的原因描述
      */
     private String scanContent(String content) {
-        // 检测不可见字符
-        for (char c : content.toCharArray()) {
-            if (INVISIBLE_CHARS.contains(c)) {
-                return "Invisible character detected: " + c;
-            }
-        }
-
-        // 检测威胁模式
-        for (Pattern pattern : THREAT_PATTERNS) {
-            Matcher matcher = pattern.matcher(content);
-            if (matcher.find()) {
-                return "Threat pattern detected: " + matcher.group();
-            }
-        }
-
-        return null; // null 表示安全通过
+        return PromptInjectionGuard.scan(content);
     }
 
 

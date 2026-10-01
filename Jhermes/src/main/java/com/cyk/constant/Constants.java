@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Shared constants for Hermes Agent Java.
@@ -17,9 +18,26 @@ public final class Constants {
 
     private static final Logger logger = LoggerFactory.getLogger(Constants.class);
 
+    /**
+     * 「旧目录迁移检查」进程级一次性守卫（见 {@link #migrateLegacyData(Path)}）。
+     *
+     * <p>{@code getHermesHome()} 会在一次运行里被多处反复调用（配置加载、Session /
+     * Memory / Skill / Trajectory 等各 Manager 初始化）。若不设守卫，每次都会重跑一遍
+     * 迁移存在性检查，导致「新旧目录并存」这类提示被刷屏 N 遍（用户实测到的现象）。
+     * 用 CAS 保证无论多少线程、多少次调用，迁移检查全局只真正执行一次。</p>
+     */
+    private static final AtomicBoolean LEGACY_MIGRATION_CHECKED = new AtomicBoolean(false);
+
     private Constants() {} // Prevent instantiation
 
-    public static final String VERSION = "1.0";
+    /**
+     * 程序版本号（单一事实源）。
+     *
+     * <p>{@link com.cyk.HermesAgent} 的 picocli {@code @Command(version=...)}、
+     * 启动横幅的版本标语均引用此常量，避免多处硬编码版本号漂移
+     * （历史上曾出现 Constants.VERSION 与 picocli 注解各写一份、值不一致）。</p>
+     */
+    public static final String VERSION = "2.0.1";
 
     /** 当前数据目录名（用户主目录下）：存放 config.yaml / memories / sessions / skills / trajectories。 */
     public static final String DEFAULT_HERMES_HOME = ".jhermes";
@@ -151,18 +169,31 @@ public final class Constants {
 
     public static final String RAG_GUIDANCE =
         "知识库检索与管理\n" +
-        "你拥有本地知识库（RAG）能力，数据存储在 PostgreSQL(pgvector) 中，由专用工具管理：\n" +
+        "你拥有本地知识库（RAG）能力，数据存储在 PostgreSQL(pgvector) 中，由专用工具管理。\n" +
+        "知识库里往往沉淀着用户积累的规范、模板、提示词、结论——这些是你凭自身能力无法猜到的。\n" +
+        "\n" +
+        "【先扫清单原则（最重要）】\n" +
+        "你无法预知知识库里有哪些文档，因此“看上去能自己答”≠“库里没有更权威的对口资料”。\n" +
+        "凡遇到下列任一情形，动笔作答前先调用一次 rag_list（只返回文档名+块数，成本极低）扫一眼清单，\n" +
+        "若有对口文档再用 rag_search 取其内容融入回答：\n" +
+        "- 内容创作/改写类：写或优化提示词、文案、规范、模板、文档、配置\n" +
+        "- 技术咨询类：用户问“应该怎么做/有没有标准”，且可能已有团队约定\n" +
+        "- 任何你打算给出“方法论、结构、最佳实践”的任务\n" +
+        "若 rag_list 为空或明显无相关文档，则直接作答，无需说明；命中时引用 source_path 增强可信度。\n" +
+        "\n" +
+        "【工具选择】\n" +
         "- 用户问“知识库有什么/在哪/多少内容” → 直接调用 rag_list，一次拿到全部已索引文档清单\n" +
-        "- 用户提问涉及项目文档、技术资料等内容 → 优先使用 rag_search 语义检索\n" +
+        "- 已知要查的具体概念、且确信库里有 → 直接 rag_search 语义检索\n" +
         "- 用户指定某个目录需要纳入知识库 → 使用 rag_index 索引其中的文档\n" +
         "- 用户要求删除某个文档 → rag_delete + path 参数\n" +
         "- 用户要求清空/删除整个知识库 → 先 rag_list 展示内容并征得同意，再 rag_delete + all=true + confirm=yes\n" +
+        "\n" +
+        "【安全红线】\n" +
         "- 严禁用 run_command 搜索磁盘来定位知识库存储（数据在数据库里不在文件系统），" +
         "严禁建议或执行 DROP DATABASE、删除源文件等破坏性替代方案\n" +
+        "- 删除知识库时只删索引数据即可，不要动用户的源文件（除非用户明确要求）\n" +
         "- 索引是增量的：已索引且未修改的文件不会重复处理，也可以通过 force: true 强制重建\n" +
-        "- 检索结果包含来源路径（source_path），回答时引用来源增加可信度\n" +
-        "- 检索无结果时告知用户，并建议检查文件是否已索引或调整查询词\n" +
-        "- 删除知识库时只删索引数据即可，不要动用户的源文件（除非用户明确要求）";
+        "- 检索无结果时告知用户，并建议检查文件是否已索引或调整查询词";
 
     // =========================================================================
     // Platform Hints - for different communication platforms
@@ -281,12 +312,17 @@ public final class Constants {
      *       直接返回旧目录继续使用，保证程序仍可读到配置，只记 WARN 供排查。</li>
      * </ol>
      *
-     * <p>幂等性：迁移成功后旧目录不复存在，后续调用的存在性判断天然短路，
-     * 无需额外的「已迁移」标记文件，也不会有重复搬迁风险。</p>
+     * <p>幂等性（两层保证）：① 进程内用 {@link #LEGACY_MIGRATION_CHECKED} 做 CAS 守卫，
+     * 全局只真正执行一次，杜绝同一进程内多次调用导致的提示刷屏；② 迁移成功后旧目录
+     * 不复存在，即便跨进程 / 重启，存在性判断也天然短路，无重复搬迁风险。</p>
      *
      * @param userHome 用户主目录
      */
     private static void migrateLegacyData(Path userHome) {
+        // 一次性守卫：本进程已检查过就直接返回，不再查文件系统、不再打印任何提示
+        if (!LEGACY_MIGRATION_CHECKED.compareAndSet(false, true)) {
+            return;
+        }
         Path legacy = userHome.resolve(LEGACY_HERMES_HOME);
         Path current = userHome.resolve(DEFAULT_HERMES_HOME);
         try {

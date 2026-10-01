@@ -68,8 +68,15 @@ public class OpenAiEmbedding implements EmbeddingClient {
 
             try (Response response = httpClient.newCall(request).execute()) {
                 if (!response.isSuccessful()) {
-                    logger.error("Embedding API error: {} {}", response.code(), response.message());
-                    throw new RuntimeException("Embedding API error: " + response.code());
+                    // 读出错误响应体（截断防止刷屏），平台的具体原因都在 body 里：
+                    // 如硅基流动 402 = {"code":30001,"message":"account balance is insufficient"}
+                    // 只打状态码会让用户误判成数据库/网络问题
+                    String errBody = response.body() != null ? response.body().string() : "";
+                    if (errBody.length() > 300) {
+                        errBody = errBody.substring(0, 300) + "...";
+                    }
+                    logger.error("Embedding API error: {} {} body={}", response.code(), response.message(), errBody);
+                    throw new RuntimeException("Embedding API error: " + response.code() + " " + errBody);
                 }
 
                 String responseBody = response.body().string();

@@ -1,6 +1,7 @@
 package com.cyk.tool;
 
 import com.cyk.bean.ToolEntry;
+import com.cyk.util.SensitivePathGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -17,6 +18,32 @@ public class FileTool {
     public static final Logger logger = LoggerFactory.getLogger(FileTool.class);
     public static final long MAX_FILE_SIZE = 1024 * 1024 * 10;//10mb
     private static final int MAX_RESULTS = 100;
+
+    /**
+     * 敏感凭据路径拦截（与 {@link TerminalTool} 共享 {@link SensitivePathGuard} 同一份黑名单）。
+     *
+     * <p>为什么文件工具也要拦：{@code run_command} 拦住了 {@code Get-Content ~/.ssh/id_rsa}，
+     * 但模型完全可以改用 {@code read_file} 达到同样效果——<b>任意一个入口能读到凭据，
+     * 密钥就会明文进入对话上下文并随 session/trajectory 持久化落盘</b>，这是不可逆泄露。
+     * 防护必须覆盖所有能触达文件系统的手，否则等于没防。</p>
+     *
+     * <p>写入路径同样拦截：往 {@code config.yaml} 里写内容可以篡改 api_key/base_url，
+     * 属于提权而非普通文件操作。</p>
+     *
+     * @param path 已 toAbsolutePath().normalize() 的路径
+     * @return 命中时返回给模型的错误 JSON；安全时返回 null
+     */
+    private static String checkSensitive(Path path) {
+        String marker = SensitivePathGuard.checkPath(path);
+        if (marker == null) {
+            return null;
+        }
+        logger.warn("已拦截敏感路径访问: {} （标记: {}）", path, marker);
+        return ToolRegistry.toolError(
+                "路径被安全策略拦截：触及敏感凭据位置（" + marker + "）。"
+                        + "用户的密钥/token 绝不允许被读入对话上下文，也不允许被本工具改写。"
+                        + "如确需相关配置信息，请告知用户自行查看；如需改配置，请让用户手动编辑。");
+    }
 
     /**
      * 读取文件
@@ -42,6 +69,11 @@ public class FileTool {
             //判断path是否存在黑名单
             if (!isPathAllowed(path)) {
                 return ToolRegistry.toolError("文件路径非法：" + path);
+            }
+            //第三步之一：敏感凭据路径拦截（黑名单命中直接拒绝读取，防密钥进上下文）
+            String sensitive = checkSensitive(path);
+            if (sensitive != null) {
+                return sensitive;
             }
 
             //第四步：大小检查
@@ -93,6 +125,11 @@ public class FileTool {
             //第二步：安全检查 + 自动创建目录
             Path path = Paths.get(pathStr).toAbsolutePath().normalize();
             if (!isPathAllowed(path)) return ToolRegistry.toolError("Access denied: " + path);
+            //敏感凭据路径同样禁止写入：改 config.yaml 等于篡改 api_key/base_url
+            String sensitive = checkSensitive(path);
+            if (sensitive != null) {
+                return sensitive;
+            }
             if (Files.isDirectory(path)) {
                 return ToolRegistry.toolError("路径是目录而非文件，请指定完整文件路径（例如 D:\\English\\data.txt）");
             }
@@ -125,8 +162,22 @@ public class FileTool {
         try {
             Path root = Paths.get(pathStr).toAbsolutePath().normalize();
             if (!isPathAllowed(root)) return ToolRegistry.toolError("Access denied: " + root);
+            //搜索起点直接指向凭据目录时也拦（例如 pattern=* path=~/.ssh 可枚举密钥文件名）
+            String sensitive = checkSensitive(root);
+            if (sensitive != null) {
+                return sensitive;
+            }
             List<String> results = new ArrayList<>();
             Files.walkFileTree(root, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                    //遍历时整棵跳过敏感目录：既避免把凭据文件名收进结果，
+                    //也免去深入 .ssh/.gnupg 这类目录的无谓 IO
+                    return SensitivePathGuard.isSensitivePath(dir)
+                            ? FileVisitResult.SKIP_SUBTREE
+                            : FileVisitResult.CONTINUE;
+                }
+
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                     String fileName = file.getFileName().toString();
@@ -160,6 +211,11 @@ public class FileTool {
         try {
             Path root = Paths.get(pathStr).toAbsolutePath().normalize();
             if (!isPathAllowed(root)) return ToolRegistry.toolError("Access denied: " + root);
+            //grep 是泄露面最大的入口：正则一撒就能把凭据文件正文捞进对话上下文，必须硬拦
+            String sensitive = checkSensitive(root);
+            if (sensitive != null) {
+                return sensitive;
+            }
 
             java.util.regex.Pattern regex = java.util.regex.Pattern.compile(pattern);
             List<Map<String, Object>> results = new ArrayList<>();
@@ -168,6 +224,14 @@ public class FileTool {
                 grepFile(root, regex, results);
             } else {
                 Files.walkFileTree(root, new SimpleFileVisitor<>() {
+                    @Override
+                    public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                        //遍历时整棵跳过敏感目录（如从用户主目录 grep 时不进入 .ssh/.gnupg）
+                        return SensitivePathGuard.isSensitivePath(dir)
+                                ? FileVisitResult.SKIP_SUBTREE
+                                : FileVisitResult.CONTINUE;
+                    }
+
                     @Override
                     public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                         String fileName = file.getFileName().toString();
