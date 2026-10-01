@@ -5,6 +5,7 @@ import com.cyk.command.ChatRunner;
 import com.cyk.command.ResumeCommand;
 import com.cyk.command.SessionsCommand;
 import com.cyk.config.HermesConfig;
+import com.cyk.constant.Constants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
@@ -12,7 +13,7 @@ import picocli.CommandLine;
 import java.io.IOException;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "Jhermes", mixinStandardHelpOptions = true, version = "2.0.1", description = "可自我进化的ai agent",
+@CommandLine.Command(name = "Jhermes", mixinStandardHelpOptions = true, version = Constants.VERSION, description = "可自我进化的ai agent",
         subcommands = {
                 ChatCommand.class,
                 SessionsCommand.class,

@@ -12,6 +12,7 @@ import com.cyk.manager.SessionManager;
 import com.cyk.tool.ToolRegistry;
 import com.cyk.tool.SkillTool;
 import com.cyk.util.ConsoleUi;
+import com.cyk.util.TokenUsageTracker;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -323,6 +324,11 @@ public class Agent {
     private void processUserMessage(String input) {
         conversationHistory.add(ModelMessage.user(input));//将用户输入的内容添加到聊天内容
 
+        // 本轮 token 用量单独记账：一次提问在工具调用循环里可能触发多次模型请求，
+        // 全部累加后才在轮末展示（只统计最后一次会严重低报）。
+        // 每轮 new 一个实例 = 下轮自动归零，无需手动 reset。
+        TokenUsageTracker turnUsage = new TokenUsageTracker();
+
         boolean continueLoop = true;
         int turnCount = 0;//轮次数量
         while (continueLoop) {
@@ -356,6 +362,13 @@ public class Agent {
             } else {
                 response = modelClient.chatCompletion(conversationHistory, toolDefinitions, false);
             }
+
+            // 用量累加：流式（stream_options.include_usage 尾 chunk）与非流式（根节点 usage）
+            // 都在此处汇合，两条路径共用一套记账，不会漏算也不会重复算。
+            // usage 为 null（部分兼容层不回传）时 record 内部静默跳过。
+            turnUsage.record(response.getUsage());
+            TokenUsageTracker.session().record(response.getUsage());
+
             //获取模型回答
             ModelMessage assistantMessage = response.getMessage();
             if (assistantMessage == null) {
@@ -404,6 +417,31 @@ public class Agent {
 
         }
 
+        // 本轮收尾：在回复末尾附加用量汇总（工具调用轮与纯文本轮同样适用，
+        // 用户可据此看清一次提问背后走了几趟模型请求）
+        printUsageSummary(turnUsage);
+
+    }
+
+    /**
+     * 在本轮回复末尾打印 token 用量汇总（本轮小计 + 会话累计）。
+     *
+     * <p>服务端未回传 usage 时（{@code requests == 0}）直接跳过，
+     * 宁可不显示也不打一排 0 误导用户以为本轮没花钱。</p>
+     *
+     * <p>刻意不放在 {@code try/finally} 里：请求抛异常时进程正在报错退出，
+     * 此时插入一行用量统计只会打乱错误输出的主次。</p>
+     *
+     * @param turnUsage 当轮计量器
+     */
+    private void printUsageSummary(TokenUsageTracker turnUsage) {
+        String summary = ConsoleUi.usageLine(turnUsage.snapshot(), TokenUsageTracker.session().snapshot());
+        if (summary.isEmpty()) {
+            return;
+        }
+        System.out.println();
+        System.out.println(summary);
+        System.out.flush();
     }
 
     /**

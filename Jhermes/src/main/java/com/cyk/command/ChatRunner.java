@@ -2,6 +2,8 @@ package com.cyk.command;
 
 import com.cyk.agent.Agent;
 import com.cyk.config.HermesConfig;
+import com.cyk.constant.Constants;
+import com.cyk.util.StartupBanner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -58,6 +60,11 @@ public final class ChatRunner {
             System.err.println("将 model.api_key 填入你的密钥（如 sk-xxx），保存后重新运行 hermes 即可。");
             return 1;
         }
+
+        // 启动横幅：整个进程只打印一次。放在 api_key 校验之后，避免
+        // 配置不完整的用户先看到一屏品牌图、再看到报错，信息主次颠倒。
+        // 这里是 chat / resume 两个命令的共同汇聚点，两条路径均覆盖且不会重复打印。
+        StartupBanner.print(Constants.VERSION);
 
         System.out.println("模型: " + config.getCurrentModel());
         System.out.println("温度: " + config.getTemperature());

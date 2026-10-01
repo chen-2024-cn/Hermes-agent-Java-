@@ -138,6 +138,67 @@ public final class ConsoleUi {
     }
 
     // =========================================================================
+    // token 用量汇总行（每轮回复末尾附加）
+    // =========================================================================
+
+    /**
+     * 渲染「本轮 + 会话累计」token 用量汇总（固定两行，纯数据展示，与助手正文视觉分离）。
+     *
+     * <p>输出形如（暗灰色，弱化视觉权重但不缺信息量）：</p>
+     * <pre>
+     *   ⚙ 本轮 输入 1,234 / 输出 56 / 总计 1,290 tokens（含 3 次模型请求）
+     *   ⚙ 会话累计 输入 5,678 / 输出 890 / 总计 6,568 tokens
+     * </pre>
+     *
+     * <p>设计要点：</p>
+     * <ul>
+     *   <li><b>数值来自 API 的 usage 字段</b>（{@link TokenUsageTracker} 只做累加），
+     *       与服务商账单同口径，不是本地估算；</li>
+     *   <li><b>「本轮」= 一次提问的全部模型请求之和</b>：Agent 的工具调用循环会让
+     *       单次提问产生多次 HTTP 请求，只统计最后一次会严重低报。请求次数 &gt; 1 时
+     *       额外标注次数，让用户一眼看出「这轮走了几趟工具」；</li>
+     *   <li><b>无用量数据时返回空串</b>（本轮请求次数为 0）：部分兼容层不回传 usage，
+     *       此时打印一排 0 是误导，宁可不显示——这是降级而非丢失功能。</li>
+     * </ul>
+     *
+     * @param turn    当轮用量快照
+     * @param session 会话累计用量快照
+     * @return 两行汇总文本（无数据时为空串，调用方判空后跳过打印）
+     */
+    public static String usageLine(TokenUsageTracker.Snapshot turn, TokenUsageTracker.Snapshot session) {
+        if (turn == null || turn.requests() <= 0) {
+            return "";
+        }
+        // 整段统一包裹暗灰（90）：若只给标签着色，数字会保持终端默认色，
+        // 一行内两种视觉权重反而显得杂乱
+        StringBuilder sb = new StringBuilder();
+        sb.append(dimPrefix()).append(color(
+                "本轮 " + formatUsage(turn) + " tokens"
+                        + (turn.requests() > 1 ? "（含 " + turn.requests() + " 次模型请求）" : ""),
+                "90"));
+        sb.append('\n');
+        sb.append(dimPrefix()).append(color(
+                "会话累计 " + formatUsage(session == null ? EMPTY_USAGE : session) + " tokens",
+                "90"));
+        return sb.toString();
+    }
+
+    /** 会话累计快照缺失（理论上不会发生）时的占位，保证行格式恒定。 */
+    private static final TokenUsageTracker.Snapshot EMPTY_USAGE =
+            new TokenUsageTracker.Snapshot(0, 0, 0, 0);
+
+    /** 把快照格式化为「输入 x / 输出 y / 总计 z」（千分位分隔，便于扫读数位）。 */
+    static String formatUsage(TokenUsageTracker.Snapshot s) {
+        return "输入 " + thousands(s.promptTokens())
+                + " / 输出 " + thousands(s.completionTokens())
+                + " / 总计 " + thousands(s.totalTokens());
+    }
+
+    private static String thousands(long n) {
+        return String.format("%,d", n);
+    }
+
+    // =========================================================================
     // Markdown 清理（非流式：拿到完整文本后彻底清理）
     // =========================================================================
 

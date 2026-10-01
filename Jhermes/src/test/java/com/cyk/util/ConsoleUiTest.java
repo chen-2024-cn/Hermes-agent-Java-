@@ -206,4 +206,72 @@ class ConsoleUiTest {
         assertThat(prompt).startsWith("\n");
         assertThat(prompt).contains("─");
     }
+
+    // =========================================================================
+    // token 用量汇总行
+    // =========================================================================
+
+    @Test
+    void usageLineShouldFollowTheFixedFormat() {
+        // 需求固定格式：本轮 输入/输出/总计 tokens，并附会话累计值
+        var turn = new TokenUsageTracker.Snapshot(1234, 56, 1290, 1);
+        var session = new TokenUsageTracker.Snapshot(5678, 890, 6568, 4);
+
+        String line = ConsoleUi.usageLine(turn, session);
+
+        assertThat(line).contains("本轮 输入 1,234 / 输出 56 / 总计 1,290 tokens");
+        assertThat(line).contains("会话累计 输入 5,678 / 输出 890 / 总计 6,568 tokens");
+        // 千分位分隔便于扫读数位
+        assertThat(line).contains(",");
+    }
+
+    @Test
+    void usageLineShouldBeTwoLines() {
+        var turn = new TokenUsageTracker.Snapshot(10, 5, 15, 1);
+        var session = new TokenUsageTracker.Snapshot(10, 5, 15, 1);
+
+        assertThat(ConsoleUi.usageLine(turn, session).split("\n", -1)).hasSize(2);
+    }
+
+    @Test
+    void usageLineShouldHintWhenTurnTookMultipleRequests() {
+        // 一次提问走了工具调用循环 → 多次模型请求，必须让用户看见
+        var single = new TokenUsageTracker.Snapshot(10, 5, 15, 1);
+        var multi = new TokenUsageTracker.Snapshot(100, 50, 150, 3);
+
+        assertThat(ConsoleUi.usageLine(single, single)).doesNotContain("次模型请求");
+        assertThat(ConsoleUi.usageLine(multi, multi)).contains("含 3 次模型请求");
+    }
+
+    @Test
+    void usageLineShouldReturnEmptyWhenNoUsageData() {
+        // 部分 OpenAI 兼容层不回传 usage，此时打一排 0 是误导
+        var empty = new TokenUsageTracker.Snapshot(0, 0, 0, 0);
+        assertThat(ConsoleUi.usageLine(empty, empty)).isEmpty();
+        assertThat(ConsoleUi.usageLine(null, null)).isEmpty();
+    }
+
+    @Test
+    void usageLineShouldDegradeGracefullyWithoutColor() {
+        // 无色环境下必须是纯文本（surefire 无 TTY，COLOR 探测恒为 false）
+        var turn = new TokenUsageTracker.Snapshot(1234, 56, 1290, 2);
+        var session = new TokenUsageTracker.Snapshot(2468, 112, 2580, 4);
+
+        String line = ConsoleUi.usageLine(turn, session);
+
+        if (!ConsoleUi.isColorEnabled()) {
+            assertThat(line).doesNotContain("\u001b");
+        }
+        // 无论是否着色，数字与标签都必须完整可见
+        assertThat(line).contains("本轮").contains("会话累计").contains("tokens");
+    }
+
+    @Test
+    void usageLineShouldUseZeroPlaceholdersWhenSessionSnapshotMissing() {
+        var turn = new TokenUsageTracker.Snapshot(10, 5, 15, 1);
+
+        String line = ConsoleUi.usageLine(turn, null);
+
+        assertThat(line).contains("会话累计 输入 0 / 输出 0 / 总计 0 tokens");
+    }
 }
