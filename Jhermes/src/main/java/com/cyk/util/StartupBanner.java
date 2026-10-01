@@ -88,7 +88,7 @@ public final class StartupBanner {
      * 二者在一次进程生命周期内互斥，天然满足「只打印一次」。
      * 刻意不用静态布尔量做守卫：那会引入难以在单测中复位的隐藏状态。</p>
      *
-     * @param version 版本号字符串（如 "2.0.1"），拼入标语行；null/空白则不显示版本段
+     * @param version 版本号字符串（如 "2.1.0"），拼入标语行；null/空白则不显示版本段
      */
     public static void print(String version) {
         System.out.println(render(version));

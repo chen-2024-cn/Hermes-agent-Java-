@@ -38,7 +38,7 @@ class StartupBannerTest {
 
     @Test
     void allLinesShouldHaveIdenticalDisplayWidthInColorMode() {
-        int[] widths = lineWidths(StartupBanner.render("2.0.1", true));
+        int[] widths = lineWidths(StartupBanner.render("2.1.0", true));
 
         assertThat(widths.length).isGreaterThan(0);
         assertThat(widths)
@@ -48,7 +48,7 @@ class StartupBannerTest {
 
     @Test
     void allLinesShouldHaveIdenticalDisplayWidthInPlainMode() {
-        int[] widths = lineWidths(StartupBanner.render("2.0.1", false));
+        int[] widths = lineWidths(StartupBanner.render("2.1.0", false));
 
         assertThat(widths)
                 .as("降级模式下每行显示宽度同样必须一致")
@@ -58,8 +58,8 @@ class StartupBannerTest {
     @Test
     void colorAndPlainModeShouldShareTheSameLayoutWidth() {
         // 关键不变量：着色只是给可见字符套 ANSI，绝不能改变版式宽度
-        int[] colored = lineWidths(StartupBanner.render("2.0.1", true));
-        int[] plain = lineWidths(StartupBanner.render("2.0.1", false));
+        int[] colored = lineWidths(StartupBanner.render("2.1.0", true));
+        int[] plain = lineWidths(StartupBanner.render("2.1.0", false));
 
         assertThat(colored).isEqualTo(plain);
     }
@@ -67,8 +67,8 @@ class StartupBannerTest {
     @Test
     void bannerShouldNeverExceedSixtyColumns() {
         for (int[] widths : new int[][]{
-                lineWidths(StartupBanner.render("2.0.1", true)),
-                lineWidths(StartupBanner.render("2.0.1", false)),
+                lineWidths(StartupBanner.render("2.1.0", true)),
+                lineWidths(StartupBanner.render("2.1.0", false)),
         }) {
             for (int w : widths) {
                 assertThat(w)
@@ -80,7 +80,7 @@ class StartupBannerTest {
 
     @Test
     void shouldContainCompleteBoxBorder() {
-        String[] lines = StartupBanner.render("2.0.1", false).split("\n", -1);
+        String[] lines = StartupBanner.render("2.1.0", false).split("\n", -1);
 
         assertThat(lines[0]).startsWith("\u256d").endsWith("\u256e");   // ╭ ... ╮
         assertThat(lines[lines.length - 1]).startsWith("\u2570").endsWith("\u256f"); // ╰ ... ╯
@@ -97,7 +97,7 @@ class StartupBannerTest {
 
     @Test
     void plainModeShouldNotContainAnyAnsiEscape() {
-        String banner = StartupBanner.render("2.0.1", false);
+        String banner = StartupBanner.render("2.1.0", false);
 
         // ESC (U+001B) 一旦出现，老 conhost 就会显示成 ^[ 或方块（用户可见乱码）
         assertThat(banner).doesNotContain("\u001b");
@@ -108,7 +108,7 @@ class StartupBannerTest {
     @Test
     void plainModeShouldStillRenderTheAsciiArt() {
         // 降级的正确含义是「失去颜色」而不是「失去内容」
-        String banner = StartupBanner.render("2.0.1", false);
+        String banner = StartupBanner.render("2.1.0", false);
 
         for (String artLine : StartupBanner.ART) {
             assertThat(banner).contains(artLine.trim());
@@ -117,9 +117,9 @@ class StartupBannerTest {
 
     @Test
     void plainModeShouldContainTaglineAndVersion() {
-        String banner = StartupBanner.render("2.0.1", false);
+        String banner = StartupBanner.render("2.1.0", false);
 
-        assertThat(banner).contains("Self-Evolving AI Agent").contains("v2.0.1");
+        assertThat(banner).contains("Self-Evolving AI Agent").contains("v2.1.0");
     }
 
     @Test
@@ -135,7 +135,7 @@ class StartupBannerTest {
 
     @Test
     void colorModeShouldEmitTruecolorSequences() {
-        String banner = StartupBanner.render("2.0.1", true);
+        String banner = StartupBanner.render("2.1.0", true);
 
         // 24-bit 真彩色前景序列：ESC[38;2;r;g;bm
         assertThat(banner).contains("\u001b[38;2;");

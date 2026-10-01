@@ -29,19 +29,19 @@ jar 托管在 GitHub Release，**直连实测仅 ~95 KB/s**（45 MB 要 8 分钟
 
 ```powershell
 # PowerShell
-$env:JHERMES_JAR_URL = "https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.0.1/hermes.jar"
+$env:JHERMES_JAR_URL = "https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.1.0/hermes.jar"
 npm install -g j-hermes
 ```
 
 ```bat
 :: CMD
-set JHERMES_JAR_URL=https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.0.1/hermes.jar
+set JHERMES_JAR_URL=https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.1.0/hermes.jar
 npm install -g j-hermes
 ```
 
 ```bash
 # bash / zsh
-export JHERMES_JAR_URL="https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.0.1/hermes.jar"
+export JHERMES_JAR_URL="https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.1.0/hermes.jar"
 npm i -g j-hermes
 ```
 

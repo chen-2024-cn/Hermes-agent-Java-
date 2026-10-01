@@ -37,7 +37,7 @@ public final class Constants {
      * 启动横幅的版本标语均引用此常量，避免多处硬编码版本号漂移
      * （历史上曾出现 Constants.VERSION 与 picocli 注解各写一份、值不一致）。</p>
      */
-    public static final String VERSION = "2.0.1";
+    public static final String VERSION = "2.1.0";
 
     /** 当前数据目录名（用户主目录下）：存放 config.yaml / memories / sessions / skills / trajectories。 */
     public static final String DEFAULT_HERMES_HOME = ".jhermes";
