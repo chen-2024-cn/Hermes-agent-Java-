@@ -22,8 +22,9 @@ CLAUDE.md
 # Superpowers
 .superpowers/
 
-# Project docs (external)
-docs/
+# Project docs
+# docs/ 按 JH-SPEC-001 决策纳入版本控制（基线报告、后续 ADR 决策记录均入库）
+# doc/（原始改造规范提示词等）仍不入库
 doc/
 *.zip
 

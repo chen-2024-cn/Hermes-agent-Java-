@@ -4,10 +4,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Map;
+import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -31,13 +33,45 @@ public final class Constants {
     private Constants() {} // Prevent instantiation
 
     /**
-     * 程序版本号（单一事实源）。
+     * 程序版本号（JH-SPEC-001 P0-1 R2：单一事实源 = pom {@code <version>}）。
      *
-     * <p>{@link com.cyk.HermesAgent} 的 picocli {@code @Command(version=...)}、
-     * 启动横幅的版本标语均引用此常量，避免多处硬编码版本号漂移
-     * （历史上曾出现 Constants.VERSION 与 picocli 注解各写一份、值不一致）。</p>
+     * <p>构建期 Maven resource filtering 把 pom 版本写入 classpath 根下的
+     * {@code version.properties}，本静态字段在类加载时读取该文件。</p>
+     *
+     * <p>{@link com.cyk.HermesAgent} 的 picocli {@code versionProvider} 与
+     * 启动横幅的版本标语均引用此值，彻底消除「Constants / pom / 发布 tag
+     * 三处各写一份」的版本漂移（历史上曾出现 1.0-SNAPSHOT vs 2.1.0）。</p>
+     *
+     * <p>注意：不再是编译期常量，因此 picocli 注解里不能直接引用
+     * （注解属性要求 compile-time constant），改用 {@code IVersionProvider}。</p>
      */
-    public static final String VERSION = "2.1.0";
+    public static final String VERSION = loadBuildVersion();
+
+    /** 读取不到构建产物 version.properties 时的兜底值（仅 IDE 直跑未经 Maven 构建的场景）。 */
+    private static final String VERSION_FALLBACK = "dev";
+
+    /**
+     * 从 classpath 的 {@code version.properties} 加载构建期注入的版本号。
+     *
+     * <p>静默降级：读取失败（文件缺失、IO 异常、键缺失）一律返回
+     * {@link #VERSION_FALLBACK} 并记 WARN，绝不让版本号问题阻断启动。</p>
+     */
+    private static String loadBuildVersion() {
+        try (InputStream in = Constants.class.getResourceAsStream("/version.properties")) {
+            if (in != null) {
+                Properties props = new Properties();
+                props.load(in);
+                String version = props.getProperty("version");
+                if (version != null && !version.isBlank()) {
+                    return version.trim();
+                }
+            }
+        } catch (IOException e) {
+            logger.warn("读取 version.properties 失败，使用兜底版本号: {}", e.getMessage());
+        }
+        logger.warn("classpath 缺少 version.properties（未经 Maven 构建？），版本号降级为 {}", VERSION_FALLBACK);
+        return VERSION_FALLBACK;
+    }
 
     /** 当前数据目录名（用户主目录下）：存放 config.yaml / memories / sessions / skills / trajectories。 */
     public static final String DEFAULT_HERMES_HOME = ".jhermes";

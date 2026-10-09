@@ -28,12 +28,21 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Build fat jar (slimmed)
-        run: mvn -f Jhermes/pom.xml clean package -DskipTests -q
+      # JH-SPEC-001 P0-1 R3：发布构建必须执行全部测试（去除 -DskipTests），
+      # 测试失败直接中止，不得上传未验证产物。
+      - name: Build fat jar (with tests)
+        run: mvn -f Jhermes/pom.xml clean package -q
 
-      - name: 复制为 hermes.jar 并核验体积
+      - name: 复制为 hermes.jar 并核验版本与体积
         run: |
-          cp Jhermes/target/Jhermes-1.0-SNAPSHOT.jar hermes.jar
+          # P0-1 R2：产物名与 tag 均由 pom 版本派生校验，杜绝三处版本漂移
+          VER=$(mvn -f Jhermes/pom.xml help:evaluate -Dexpression=project.version -q -DforceStdout)
+          TAG="${{ github.event.inputs.tag }}"
+          echo "pom version=$VER tag=$TAG"
+          if [ "$TAG" != "v$VER" ]; then
+            echo "::error::tag($TAG) 与 pom 版本(v$VER)不一致，请先对齐再发布"; exit 1
+          fi
+          cp "Jhermes/target/Jhermes-$VER.jar" hermes.jar
           echo "jar size: $(du -h hermes.jar | cut -f1)"
           # 瘦身核验：非 win32 的 Playwright 驱动应已被 shade 排除，jar 应 ~45MB 而非 ~182MB
           SZ=$(stat -c%s hermes.jar)

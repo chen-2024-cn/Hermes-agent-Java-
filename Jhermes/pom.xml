@@ -4,7 +4,12 @@
 
     <groupId>com.cyk</groupId>
     <artifactId>Jhermes</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <!-- 版本号单一事实源（JH-SPEC-001 P0-1 R2）：
+         构建期 resource filtering 将本值写入 classpath:/version.properties，
+         Constants.VERSION 与 picocli 版本输出均从该文件读取；
+         发布工作流的 tag / 产物名也由 pom 派生校验（release-upload.yml）。
+         历史教训：版本曾在 Constants(2.1.0) / pom(1.0-SNAPSHOT) / tag(v2.1.0) 三处漂移。 -->
+    <version>2.1.0</version>
     <packaging>jar</packaging>
 
     <name>Jhermes</name>
@@ -128,6 +133,17 @@
     </dependencies>
 
     <build>
+        <resources>
+            <!-- 普通资源（logback.xml / prompts 等）不做变量替换 -->
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <!-- 受过滤资源：version.properties 的 ${project.version} 由 pom 版本替换 -->
+            <resource>
+                <directory>src/main/filtered-resources</directory>
+                <filtering>true</filtering>
+            </resource>
+        </resources>
         <plugins>
             <!-- Compiler Plugin -->
             <plugin>

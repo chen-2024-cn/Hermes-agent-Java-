@@ -1,0 +1,47 @@
+name: CI
+
+# JH-SPEC-001 P0-1 R1：对 push 与 PR 触发构建+测试门禁。
+# 双平台矩阵：目标平台是 Windows（命令解析/编码相关逻辑必须在 Windows 上被测），
+# Linux 侧保证跨平台代码路径（CC-1）不回归。
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Build & Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # 统一走 Git Bash：两个平台使用同一条 mvnw 命令，避免 Windows 上
+      # ./mvnw 无 cmd 后缀解析差异；chmod 在 Git Bash 下无害。
+      - name: mvn verify (excludes integration group)
+        shell: bash
+        run: |
+          chmod +x Jhermes/mvnw
+          ./Jhermes/mvnw -f Jhermes/pom.xml verify
+
+      - name: Upload surefire reports (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-${{ matrix.os }}
+          path: Jhermes/target/surefire-reports/
+          retention-days: 7

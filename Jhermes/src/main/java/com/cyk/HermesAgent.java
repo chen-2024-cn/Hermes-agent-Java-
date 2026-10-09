@@ -13,13 +13,29 @@ import picocli.CommandLine;
 import java.io.IOException;
 import java.util.concurrent.Callable;
 
-@CommandLine.Command(name = "Jhermes", mixinStandardHelpOptions = true, version = Constants.VERSION, description = "可自我进化的ai agent",
+@CommandLine.Command(name = "Jhermes", mixinStandardHelpOptions = true,
+        versionProvider = HermesAgent.JhermesVersionProvider.class,
+        description = "可自我进化的ai agent",
         subcommands = {
                 ChatCommand.class,
                 SessionsCommand.class,
                 ResumeCommand.class
         })
 public class HermesAgent implements Callable<Integer> {
+
+    /**
+     * picocli 版本输出提供者（JH-SPEC-001 P0-1 R2）。
+     *
+     * <p>{@code @Command(version=...)} 注解属性要求编译期常量，而
+     * {@link Constants#VERSION} 已改为运行期从构建产物 version.properties
+     * 读取（单一事实源 = pom），故必须改走 IVersionProvider。</p>
+     */
+    static class JhermesVersionProvider implements CommandLine.IVersionProvider {
+        @Override
+        public String[] getVersion() {
+            return new String[]{Constants.CLI_NAME + " " + Constants.VERSION};
+        }
+    }
 
     private static final Logger logger = LoggerFactory.getLogger(HermesAgent.class);
 
