@@ -26,9 +26,6 @@ public class HermesAgent implements Callable<Integer> {
     @CommandLine.Option(names = {"-c", "--config"}, description = "配置文件路径")
     private String configPath;
 
-    @CommandLine.Option(names = {"-v", "--verbose"}, description = "详细输出")
-    private boolean verbose;
-
     // ---- 以下选项与 chat 子命令保持一致：根命令默认进入对话，需支持透传 ----
 
     /** 模型别名或真实模型名（同 chat -m）。null = 不覆盖配置。 */
@@ -51,17 +48,11 @@ public class HermesAgent implements Callable<Integer> {
         return configPath;
     }
 
-    public boolean isVerbose() {
-        return verbose;
-    }
-
     @Override
     public Integer call() throws Exception {
         // Claude Code 式体验：不带任何子命令时直接进入交互对话（等价于 `Jhermes chat`）。
         // 查看用法请用 `Jhermes --help`（由 mixinStandardHelpOptions 提供），不再依赖根命令打印帮助。
-        if (verbose) {
-            System.out.println("自定义配置: " + configPath);
-        }
+
         HermesConfig config = HermesConfig.load();
         return ChatRunner.start(config, model, temperature,
                 ChatRunner.resolveStream(stream, noStream), null);

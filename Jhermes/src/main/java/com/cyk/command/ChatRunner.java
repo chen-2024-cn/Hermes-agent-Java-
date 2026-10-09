@@ -17,7 +17,8 @@ public final class ChatRunner {
 
     private static final Logger logger = LoggerFactory.getLogger(ChatRunner.class);
 
-    private ChatRunner() {}
+    private ChatRunner() {
+    }
 
     /**
      * 应用命令行覆盖项并启动对话。
@@ -33,6 +34,15 @@ public final class ChatRunner {
      */
     public static int start(HermesConfig config, String modelOpt, Double temperatureOpt,
                             Boolean streamOpt, String resumeSessionId) {
+        //如果没有设置则用默认设置
+        if (modelOpt != null) {
+            //先检查当前模型是否正确
+            if (config.notFoundModel(modelOpt)) {
+                logger.error("目录{} 中未发现{} 模型，请重新选择", HermesConfig.getConfigPath(), modelOpt);
+                logger.error("可用命令 -l 命令去查看所有模型");
+                return 1;
+            }
+        }
         // 模型：先按别名匹配，命中则激活别名档案；否则当作真实模型名直接覆盖
         if (modelOpt != null && !modelOpt.isBlank()) {
             if (config.getModelProfile(modelOpt) != null) {
@@ -45,6 +55,7 @@ public final class ChatRunner {
 
         // 温度：仅在 CLI 显式传入时覆盖
         if (temperatureOpt != null) {
+            //检查temperature是否在合理范围内
             config.setTemperature(temperatureOpt);
         }
 

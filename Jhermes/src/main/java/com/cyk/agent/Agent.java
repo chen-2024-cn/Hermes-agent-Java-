@@ -343,7 +343,7 @@ public class Agent {
                 // 增量不直接裸打印，而是经过 ConsoleUi.StreamingRenderer 做跨 token 安全的
                 // 空白规范化：连续换行压缩为最多一个空行、行尾/开头空白清除（用户反馈的
                 // 「回答很多换行且不美观」的终端侧兜底；提示词侧已同步约束模型输出）。
-                boolean[] prefixPrinted = {false};
+                boolean[] prefixPrinted = {false};//是否打印过前缀，因为在lambda中不能修改外部局部变量，只能用数组绕过
                 ConsoleUi.StreamingRenderer renderer = ConsoleUi.newStreamingRenderer(text -> {
                     System.out.print(text);
                     System.out.flush();

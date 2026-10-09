@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 public class ModelClient {
     private static final Logger logger = LoggerFactory.getLogger(ModelClient.class);
@@ -83,6 +84,9 @@ public class ModelClient {
                     .append(HermesConfig.getConfigPath())
                     .append("\n在 model.api_key 填入有效的密钥后重试（无需改代码，改完即生效）。");
             case 404 -> sb.append("\n排查: base_url 或模型名不对。请检查配置中 model.base_url 与 model.model 是否匹配所用服务商。");
+            case 405 -> sb.append("\n排查: 请求路径不被服务端接受。base_url 应填接口前缀（如 https://api.deepseek.com 或 https://xxx/v1），")
+                    .append("程序会自动拼接 /chat/completions；若填了完整端点会导致路径重复。请核对配置 ")
+                    .append(HermesConfig.getConfigPath());
             case 429 -> sb.append("\n排查: 触发限流或余额不足，稍后重试或检查服务商账户。");
             default -> { /* 其他状态码不追加指引 */ }
         }
@@ -143,7 +147,7 @@ public class ModelClient {
      */
     public ChatCompletionResponse chatCompletionStream(List<ModelMessage> messages,
                                                        List<Map<String, Object>> tools,
-                                                       java.util.function.Consumer<String> onContent) {
+                                                       Consumer<String> onContent) {
         try {
             // stream_options.include_usage=true 让服务端在最后一个 chunk 回传 token 用量
             String json = buildRequestBody(messages, tools, true, true);
@@ -412,10 +416,10 @@ public class ModelClient {
                 }
 
                 //解析tool call
-                if (messageNode.has("tool_calls")) {
+                if (messageNode.path("tool_calls").isArray()) {
                     ArrayNode toolCalls = (ArrayNode) messageNode.get("tool_calls");
 
-                    if (toolCalls != null && !toolCalls.isEmpty()) {
+                    if (!toolCalls.isEmpty()) {
                         List<ToolCall> toolCallList = new ArrayList<>();
 
                         //解析toolCalls 转成ToolCall对象

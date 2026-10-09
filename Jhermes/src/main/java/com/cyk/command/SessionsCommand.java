@@ -40,7 +40,7 @@ public class SessionsCommand implements Callable<Integer> {
 
         int index = 1;
         for (Session s : sessions) {
-            System.out.printf("%-3d %-16s %-20s %-6d %s%n",
+            System.out.printf("%-3d %-16s %-20s %-6s %s%n",
                     index++,
                     s.id,
                     TIME_FMT.format(Instant.ofEpochMilli(s.lastActivity)),

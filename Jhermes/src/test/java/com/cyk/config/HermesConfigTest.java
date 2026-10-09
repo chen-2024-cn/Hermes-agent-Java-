@@ -234,4 +234,71 @@ class HermesConfigTest {
 
         assertThat(config.isExtractEnabled()).isFalse();
     }
+
+    // =========================================================================
+    // base_url 规范化（防 405：用户误填完整端点）
+    // =========================================================================
+
+    @Test
+    void baseUrlWithFullEndpointShouldBeStrippedToPrefix() {
+        // 用户常见误填：把完整端点填进 base_url，拼接后路径重复 → 服务端 405
+        assertThat(HermesConfig.normalizeBaseUrl("https://gw.example.com/v1/chat/completions"))
+                .isEqualTo("https://gw.example.com/v1");
+    }
+
+    @Test
+    void baseUrlShouldStripTrailingSlashesAndWhitespace() {
+        assertThat(HermesConfig.normalizeBaseUrl("  https://api.example.com/v1//  "))
+                .isEqualTo("https://api.example.com/v1");
+    }
+
+    @Test
+    void baseUrlWithEndpointAndTrailingSlashShouldBeStripped() {
+        // 斜杠与后缀可能交替出现，需循环剥离
+        assertThat(HermesConfig.normalizeBaseUrl("https://gw.example.com/v1/chat/completions/"))
+                .isEqualTo("https://gw.example.com/v1");
+    }
+
+    @Test
+    void normalizeBaseUrlShouldKeepValidPrefixUntouched() {
+        assertThat(HermesConfig.normalizeBaseUrl("https://api.deepseek.com"))
+                .isEqualTo("https://api.deepseek.com");
+        assertThat(HermesConfig.normalizeBaseUrl("https://api.deepseek.com/v1"))
+                .isEqualTo("https://api.deepseek.com/v1");
+    }
+
+    @Test
+    void normalizeBaseUrlShouldHandleNullAndBlank() {
+        assertThat(HermesConfig.normalizeBaseUrl(null)).isNull();
+        assertThat(HermesConfig.normalizeBaseUrl("   ")).isEmpty();
+    }
+
+    @Test
+    void getBaseUrlShouldReturnNormalizedPrefix() {
+        Map<String, Object> data = baseData();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> model = (Map<String, Object>) data.get("model");
+        model.put("base_url", "https://gw.example.com/v1/chat/completions");
+
+        HermesConfig config = newConfig(data);
+
+        // getBaseUrl() 拿到的是可直接拼 "/chat/completions" 的前缀
+        assertThat(config.getBaseUrl() + "/chat/completions")
+                .isEqualTo("https://gw.example.com/v1/chat/completions");
+    }
+
+    @Test
+    void aliasBaseUrlShouldBeNormalizedToo() {
+        Map<String, Object> data = baseData();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> models = (Map<String, Object>) data.get("models");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> pro = (Map<String, Object>) models.get("pro");
+        pro.put("base_url", "https://pro.example.com/v1/chat/completions");
+
+        HermesConfig config = newConfig(data);
+        config.applyModelAlias("pro");
+
+        assertThat(config.getBaseUrl()).isEqualTo("https://pro.example.com/v1");
+    }
 }

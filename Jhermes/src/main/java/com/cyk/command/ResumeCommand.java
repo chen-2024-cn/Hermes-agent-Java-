@@ -13,7 +13,7 @@ import java.util.concurrent.Callable;
  * <p>不带参数时恢复最近一次会话，等价于 {@code resume --last}。</p>
  */
 @CommandLine.Command(name = "resume", description = "恢复历史会话继续对话")
-public class ResumeCommand implements Callable<Integer> {
+public class  ResumeCommand implements Callable<Integer> {
 
     @CommandLine.Option(names = {"-m", "--model"}, description = "模型别名（config.yaml 的 models 段）或模型名")
     private String model;

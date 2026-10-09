@@ -1,6 +1,7 @@
 package com.cyk.tool;
 
 import com.cyk.bean.ToolEntry;
+import com.cyk.rag.RagEngine;
 import com.cyk.util.PromptInjectionGuard;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -312,10 +313,10 @@ public class ToolRegistry {
 
         // RAG 引擎（懒初始化：仅当配置启用且 pgvector 可用时注册）
         try {
-            com.cyk.rag.RagEngine ragEngine = com.cyk.rag.RagEngine.create(config);
+            RagEngine ragEngine = RagEngine.create(config);
             if (ragEngine != null) {
-                com.cyk.tool.RagTool.setEngine(ragEngine);
-                com.cyk.tool.RagTool.register(instance);
+                RagTool.setEngine(ragEngine);
+                RagTool.register(instance);
             }
         } catch (Exception e) {
             logger.warn("Failed to initialize RAG engine: {}", e.getMessage());

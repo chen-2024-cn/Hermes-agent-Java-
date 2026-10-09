@@ -40,7 +40,7 @@ public class ChatCommand implements Callable<Integer> {
     public Integer call() throws Exception {
         try {
             // 父命令的全局选项
-            if (parent != null && parent.isVerbose()) {
+            if (parent != null) {
                 System.out.println("自定义配置: " + parent.getConfigPath());
             }
             if (parent != null && parent.getConfigPath() != null) {

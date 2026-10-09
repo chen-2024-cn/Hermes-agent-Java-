@@ -31,7 +31,9 @@ public class SkillManager {
     private SkillManager() {
         this.skillsDir = Constants.getHermesHome().resolve("skills");
         try {
-            Files.createDirectories(skillsDir);
+            if (Files.notExists(skillsDir)) {
+                Files.createDirectories(skillsDir);
+            }
         } catch (IOException e) {
             logger.error("Failed to create skills directory: {}", e.getMessage());
         }

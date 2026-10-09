@@ -32,3 +32,6 @@ doc/
 
 # Docker compose 本机覆盖（模板见 .env.example）
 .env
+
+# Java ????
+*.class

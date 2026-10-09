@@ -40,6 +40,11 @@ public class HermesConfig {
     /** CLI 直接指定的温度覆盖值（优先级最高，仅内存生效不落盘）。 */
     private Double temperatureOverride;
 
+    /** temperature 合理范围下限（0.0 = 确定性输出）。 */
+    private static final double MIN_TEMPERATURE = 0.0;
+    /** temperature 合理范围上限（2.0 = 最大随机性，兼容 OpenAI / DeepSeek 等主流 API）。 */
+    private static final double MAX_TEMPERATURE = 2.0;
+
     /**
      * CLI 是否显式指定流式输出。
      * <p>用 Boolean 表达三态：null=未指定（沿用配置），true/false=显式覆盖。</p>
@@ -89,7 +94,7 @@ public class HermesConfig {
         Path configPath = getConfigPath();
         HermesConfig cfg = new HermesConfig(configPath);
 
-        //判断当前目录下是否存在yml文件
+        //判断当前目录下是否存在yaml文件
         if (Files.exists(configPath)) {
             cfg.config = yamlMapper.readValue(configPath.toFile(), Map.class);
         } else {
@@ -201,7 +206,24 @@ public class HermesConfig {
      */
     public List<String> listModelAliases() {
         Map<String, Object> models = getMap("models");
+
         return models.isEmpty() ? List.of() : new ArrayList<>(models.keySet());
+    }
+
+    /**
+     * 检查当前指定模型是否在文件中有列出
+     */
+    public boolean notFoundModel(String alias) {
+        if (alias == null || alias.isBlank()) {
+            return true;
+        }
+        Map<String, Object> models = getMap("models");
+        Object raw = models.get(alias);
+        if (raw == null) {
+            logger.warn("未找到模型别名 '{}'，可用别名：{}；将沿用顶层 model 配置", alias, listModelAliases());
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -247,9 +269,6 @@ public class HermesConfig {
     public boolean applyModelAlias(String alias) {
         ModelProfile profile = getModelProfile(alias);
         if (profile == null) {
-            if (alias != null && !alias.isBlank()) {
-                logger.warn("未找到模型别名 '{}'，可用别名：{}；将沿用顶层 model 配置", alias, listModelAliases());
-            }
             return false;
         }
         this.activeProfile = profile;
@@ -278,7 +297,7 @@ public class HermesConfig {
         if (temperature == null) {
             return;
         }
-        this.temperatureOverride = temperature;
+        this.temperatureOverride = clampTemperature(temperature);
     }
 
     /**
@@ -297,10 +316,51 @@ public class HermesConfig {
     }
 
     public String getBaseUrl() {
-        if (activeProfile != null && activeProfile.baseUrl() != null) {
-            return activeProfile.baseUrl();
+        String raw = (activeProfile != null && activeProfile.baseUrl() != null)
+                ? activeProfile.baseUrl()
+                : readString("model.base_url", null);
+        return normalizeBaseUrl(raw);
+    }
+
+    /**
+     * 规范化模型服务地址，容忍用户常见误填。
+     *
+     * <p>{@code base_url} 的语义是「接口前缀」，{@code ModelClient} 会自行拼接
+     * {@code /chat/completions}。若用户把完整端点填进来，请求会变成
+     * {@code .../v1/chat/completions/chat/completions}，被网关以 405 Method Not
+     * Allowed 拒绝。这里统一做容错：</p>
+     * <ul>
+     *   <li>去掉首尾空白与末尾 {@code /}（含重复斜杠）</li>
+     *   <li>剥离误带上的 {@code /chat/completions} 后缀</li>
+     * </ul>
+     *
+     * @param raw 配置中的原始值；null/空白原样返回
+     * @return 规范化后的前缀地址
+     */
+    static String normalizeBaseUrl(String raw) {
+        if (raw == null) {
+            return null;
         }
-        return readString("model.base_url", null);
+        String url = raw.trim();
+        if (url.isEmpty()) {
+            return url;
+        }
+        // 循环剥离：兼容末尾多个斜杠（"https://x/v1//"）与重复误填后缀
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            if (url.endsWith("/")) {
+                url = url.substring(0, url.length() - 1);
+                changed = true;
+            }
+            String lower = url.toLowerCase(java.util.Locale.ROOT);
+            if (lower.endsWith("/chat/completions")) {
+                url = url.substring(0, url.length() - "/chat/completions".length());
+                changed = true;
+                logger.warn("base_url 误带了 /chat/completions 后缀，已自动修正为: {}", url);
+            }
+        }
+        return url;
     }
 
     public String getApiKey() {
@@ -323,12 +383,26 @@ public class HermesConfig {
 
     public double getTemperature() {
         if (temperatureOverride != null) {
-            return temperatureOverride;
+            return clampTemperature(temperatureOverride);
         }
         if (activeProfile != null && activeProfile.temperature() != null) {
-            return activeProfile.temperature();
+            return clampTemperature(activeProfile.temperature());
         }
-        return readDouble("agent.temperature", 0.7);
+        return clampTemperature(readDouble("agent.temperature", 0.7));
+    }
+
+    /**
+     * 将 temperature 钳制到 {@code [0.0, 2.0]} 合理范围。
+     * 越界时返回边界值并记 WARN，不抛异常——配置里写错不该让程序崩溃。
+     */
+    private static double clampTemperature(double value) {
+        if (value < MIN_TEMPERATURE || value > MAX_TEMPERATURE) {
+            double clamped = Math.max(MIN_TEMPERATURE, Math.min(MAX_TEMPERATURE, value));
+            logger.warn("temperature={} 超出合理范围 [{}, {}]，已自动调整为 {}",
+                    value, MIN_TEMPERATURE, MAX_TEMPERATURE, clamped);
+            return clamped;
+        }
+        return value;
     }
 
     public int getMaxTokens() {
@@ -509,9 +583,6 @@ public class HermesConfig {
             }
         }
         Object result = current.get(keys[keys.length - 1]);
-        if (result != null && defaultValue != null) {
-            return (T) result;
-        }
         return result != null ? (T) result : defaultValue;
     }
 }
