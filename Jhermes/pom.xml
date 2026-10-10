@@ -145,6 +145,18 @@
             </resource>
         </resources>
         <plugins>
+            <!-- Resources Plugin：显式声明 properties 过滤编码，
+                 否则 Maven 用平台默认编码（Windows=GBK）读写被过滤资源，
+                 version.properties 等含注释的中文内容可能乱码 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>3.3.1</version>
+                <configuration>
+                    <propertiesEncoding>UTF-8</propertiesEncoding>
+                </configuration>
+            </plugin>
+
             <!-- Compiler Plugin -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

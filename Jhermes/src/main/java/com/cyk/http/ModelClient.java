@@ -22,7 +22,14 @@ import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
-public class ModelClient {
+/**
+ * OpenAI 兼容 /chat/completions 的生产实现（JH-SPEC-001 P0-5 R0）。
+ *
+ * <p>失败一律抛 {@link LlmTransportException}（带状态码与可重试标记），
+ * 而非裸 {@code RuntimeException}——上层 {@code Agent} 据此做指数退避重试
+ * 与回合级错误边界，REPL 不再因一次 429 而整进程退出（附录 A1）。</p>
+ */
+public class ModelClient implements LlmClient {
     private static final Logger logger = LoggerFactory.getLogger(ModelClient.class);
     private static final MediaType JSON_MEDIA_TYPE = MediaType.get("application/json; charset=utf-8");
 
@@ -69,33 +76,12 @@ public class ModelClient {
     }
 
     /**
-     * 构造对人友好的 HTTP 错误信息：状态码 + 服务端响应体 + 针对常见状态码的自查指引。
-     *
-     * <p>401/403 几乎都是 api_key 没配或配错——直接在消息里告诉用户去哪修，
-     * 而不是让用户对着一个状态码猜。</p>
-     */
-    private static String buildHttpErrorMessage(String prefix, int code, String body) {
-        StringBuilder sb = new StringBuilder(prefix).append(": HTTP ").append(code);
-        if (body != null && !body.isBlank()) {
-            sb.append("\n服务端返回: ").append(body);
-        }
-        switch (code) {
-            case 401, 403 -> sb.append("\n排查: API Key 无效或未配置。请编辑 ")
-                    .append(HermesConfig.getConfigPath())
-                    .append("\n在 model.api_key 填入有效的密钥后重试（无需改代码，改完即生效）。");
-            case 404 -> sb.append("\n排查: base_url 或模型名不对。请检查配置中 model.base_url 与 model.model 是否匹配所用服务商。");
-            case 405 -> sb.append("\n排查: 请求路径不被服务端接受。base_url 应填接口前缀（如 https://api.deepseek.com 或 https://xxx/v1），")
-                    .append("程序会自动拼接 /chat/completions；若填了完整端点会导致路径重复。请核对配置 ")
-                    .append(HermesConfig.getConfigPath());
-            case 429 -> sb.append("\n排查: 触发限流或余额不足，稍后重试或检查服务商账户。");
-            default -> { /* 其他状态码不追加指引 */ }
-        }
-        return sb.toString();
-    }
-
-    /**
      * 向LLm发送请求获取响应（非流式，整段返回）
+     *
+     * <p>排查指引与重试分类已由 {@link LlmTransportException} 接管，
+     * 本方法只负责传输与解析。</p>
      */
+    @Override
     public ChatCompletionResponse chatCompletion(List<ModelMessage> messages, List<Map<String, Object>> tools, boolean stream) {
         try {
             String json = buildRequestBody(messages, tools, false, false);
@@ -114,7 +100,7 @@ public class ModelClient {
             try (Response response = httpClient.newCall(requestBuilder).execute()) {
                 if (!response.isSuccessful()) {
                     // body 必须用 .string() 读取：直接拼 ResponseBody 只会得到 RealResponseBody@160c3ec1 对象引用
-                    throw new RuntimeException(buildHttpErrorMessage("请求失败", response.code(), readErrorBody(response)));
+                    throw LlmTransportException.http("请求失败", response.code(), readErrorBody(response));
                 }
 
                 String responseBody = response.body().string();
@@ -122,11 +108,11 @@ public class ModelClient {
                 return parseCompletionResponse(root);
 
             } catch (IOException e) {
-                throw new RuntimeException("Chat completion request failed", e);
+                throw LlmTransportException.network("模型请求失败", e);
             }
 
         } catch (JsonProcessingException e) {
-            throw new RuntimeException("Failed to serialize chat completion request", e);
+            throw LlmTransportException.serialization("构造对话请求体失败", e);
         }
 
     }
@@ -145,6 +131,7 @@ public class ModelClient {
      * @param onContent 文本增量回调（实时打印用）；可为 null 表示不回调
      * @return 组装完成的完整响应（等价于非流式的一次性返回）
      */
+    @Override
     public ChatCompletionResponse chatCompletionStream(List<ModelMessage> messages,
                                                        List<Map<String, Object>> tools,
                                                        Consumer<String> onContent) {
@@ -164,10 +151,11 @@ public class ModelClient {
             try (Response response = httpClient.newCall(requestBuilder).execute()) {
                 if (!response.isSuccessful()) {
                     // 失败时 body 可能是普通 JSON 错误而非 SSE，直接读出报错
-                    throw new RuntimeException(buildHttpErrorMessage("流式请求失败", response.code(), readErrorBody(response)));
+                    throw LlmTransportException.http("流式请求失败", response.code(), readErrorBody(response));
                 }
                 if (response.body() == null) {
-                    throw new RuntimeException("流式响应体为空");
+                    // 2xx 却无响应体属服务端异常行为，与传输抖动同类，归为可重试
+                    throw LlmTransportException.network("流式响应体为空", null);
                 }
                 // SSE 是 UTF-8 文本流；用 BufferedReader 按行读取事件
                 try (BufferedReader reader = new BufferedReader(
@@ -175,11 +163,11 @@ public class ModelClient {
                     return assembleStream(reader, onContent);
                 }
             } catch (IOException e) {
-                throw new RuntimeException("Stream chat completion request failed", e);
+                throw LlmTransportException.network("流式请求失败", e);
             }
 
         } catch (JsonProcessingException e) {
-            throw new RuntimeException("Failed to serialize stream request", e);
+            throw LlmTransportException.serialization("构造流式请求体失败", e);
         }
     }
 
@@ -519,7 +507,7 @@ public class ModelClient {
             //发送请求（用短超时 client）
             try (Response response = extractionClient.newCall(requestBuilder).execute()) {//获得模型返回的数据
                 if (!response.isSuccessful()) {
-                    throw new RuntimeException(buildHttpErrorMessage("请求失败", response.code(), readErrorBody(response)));
+                    throw LlmTransportException.http("知识提取请求失败", response.code(), readErrorBody(response));
                 }
 
                 String responseBody = response.body().string();
@@ -537,7 +525,7 @@ public class ModelClient {
             }
 
         } catch (JsonProcessingException e) {
-            throw new RuntimeException("Failed to serialize extraction request", e);
+            throw LlmTransportException.serialization("构造知识提取请求体失败", e);
         }
 
         return "";
