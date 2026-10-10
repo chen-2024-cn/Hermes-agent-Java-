@@ -1,0 +1,40 @@
+# Jhermes config for AC9 sandbox verification (JH-SPEC-001 P0-2 AC9)
+#
+# Layer 1 (security check) does NOT need api_key at all - it never calls the model.
+# Layer 2 (interactive session) needs a real key: copy your model section from
+# your real machine config at  %USERPROFILE%\.jhermes\config.yaml
+# NEVER commit or paste your real key back to me - the sandbox is destroyed on close.
+
+model:
+  model: "deepseek-chat"
+  base_url: "https://api.deepseek.com"
+  api_key: "YOUR_API_KEY_HERE"
+
+agent:
+  max_turns: 15
+  temperature: 0.2
+  max_tokens: 2048
+  stream: false
+  # session_max_messages is optional (P0-5 R6); default 100
+
+tools:
+  # run_command must be registered for AC9 layer 2
+  terminal_enabled: true
+
+security:
+  # confirmation gate + audit are ON by default; keep them for AC9
+  audit_enabled: true
+  audit_retention_days: 30
+  # uncomment to point at a custom rule file:
+  # rules_file: "C:\\AC9\\custom-rules.yaml"
+
+# RAG is disabled in the sandbox: there is no PostgreSQL here, and leaving it
+# enabled would only add a startup warning (known defect A22, fixed in P1-5).
+rag:
+  enabled: false
+
+# knowledge extraction would burn tokens and slow down `exit`; off for verification
+extract:
+  enabled: false
+  min_messages: 4
+  max_insights: 5
