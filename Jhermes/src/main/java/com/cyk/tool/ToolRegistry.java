@@ -167,11 +167,49 @@ public class ToolRegistry {
         if (toolEntry == null) {
             return toolError("未找到工具：" + name);
         }
-        // handler 是在注册时绑定的函数引用，如 FileTool::readFile
-        String result = toolEntry.getHandler().apply(args);
-        result = annotateExternalContent(result, toolEntry);
-        return capResultSize(result, toolEntry);
+        try {
+            // handler 是在注册时绑定的函数引用，如 FileTool::readFile
+            String result = toolEntry.getHandler().apply(args);
+            result = annotateExternalContent(result, toolEntry);
+            return capResultSize(result, toolEntry);
+        } catch (OutOfMemoryError oom) {
+            // 堆内存耗尽属 JVM 级不可恢复状态：任何「优雅降级」都建立在还能分配内存的前提上，
+            // 吞掉它只会让进程带着已损坏的堆继续跑，因此原样上抛（P0-5 R1 明确的唯一例外）。
+            throw oom;
+        } catch (Throwable t) {
+            // 附录 A2：改造前此处无任何边界，工具内部一个 ClassCastException / NPE
+            // 就会穿透到 Agent.run() 并让整个进程以「执行异常」退出，会话不落盘。
+            // 工具失败属于「本轮任务受阻」，而非「会话终止」：降级为 error JSON
+            // 回传模型，模型可据此改参数重试或如实告知用户，对话得以继续。
+            logger.warn("工具 {} 执行异常: {}", name, t.toString(), t);
+            return toolError("工具执行异常: " + describeError(t)
+                    + "。工具本身出错并非任务失败，请检查参数后重试，或改用其他工具；"
+                    + "若反复失败请如实告知用户，不要无限重试同一调用。");
+        }
     }
+
+    /**
+     * 提取异常的简短描述供回传模型：类名 + message（截断）。
+     *
+     * <p>不把整条堆栈塞进对话历史：一是 token 成本（堆栈会被后续每轮重发），
+     * 二是 message 可能携带本地路径等噪音；完整堆栈已记入 WARN 日志供排查。</p>
+     *
+     * <p>包级可见便于单测验证截断行为。</p>
+     */
+    static String describeError(Throwable t) {
+        String message = t.getMessage();
+        if (message == null || message.isBlank()) {
+            return t.getClass().getSimpleName();
+        }
+        String trimmed = message.trim();
+        if (trimmed.length() > MAX_ERROR_MESSAGE_CHARS) {
+            trimmed = trimmed.substring(0, MAX_ERROR_MESSAGE_CHARS) + "...";
+        }
+        return t.getClass().getSimpleName() + ": " + trimmed;
+    }
+
+    /** 回传给模型的异常描述最大字符数（完整堆栈在日志里）。 */
+    static final int MAX_ERROR_MESSAGE_CHARS = 300;
 
     /**
      * 外部内容注入扫描：命中威胁话术/不可见字符时，在结果前加显式安全警示。
@@ -299,7 +337,8 @@ public class ToolRegistry {
     public static void initialize(com.cyk.config.HermesConfig config) {
         FileTool.register(instance);
         MemoryTool.register(instance);
-        SkillTool.register(instance);
+        // SkillTool 需要配置：技能脚本执行超时（P0-5 R10）由 skill.script_timeout_seconds 控制
+        SkillTool.register(instance, config);
         WebSearchTool.register(instance);
         FetchPageTool.register(instance);
 

@@ -3,14 +3,23 @@ package com.cyk.tool;
 import com.cyk.bean.Skill;
 import com.cyk.bean.ToolDefinition;
 import com.cyk.bean.ToolEntry;
+import com.cyk.config.HermesConfig;
+import com.cyk.constant.Constants;
 import com.cyk.manager.SkillManager;
+import com.cyk.util.ProcessTerminator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Function;
 
 public class SkillTool {
@@ -19,8 +28,23 @@ public class SkillTool {
     private static final SkillManager skillManager = SkillManager.getInstance();
     private static ToolRegistry toolRegistry;
 
-    public static void register(ToolRegistry registry) {
+    /**
+     * 技能脚本执行超时（秒），由 {@link #register(ToolRegistry, HermesConfig)} 从配置注入。
+     *
+     * <p>P0-5 R10（附录 A9）：改造前脚本执行完全无超时，一个挂死的技能脚本
+     * 会把整个会话永久阻塞在 {@code waitFor()} 上，用户只能强杀进程（丢会话）。</p>
+     */
+    private static int scriptTimeoutSeconds = Constants.DEFAULT_SKILL_SCRIPT_TIMEOUT_SECONDS;
+
+    /** 超时上限：防止配置写成天文数字导致护栏失效。 */
+    static final int MAX_SCRIPT_TIMEOUT_SECONDS = 600;
+
+    public static void register(ToolRegistry registry, HermesConfig config) {
         toolRegistry = registry;
+        if (config != null) {
+            scriptTimeoutSeconds = Math.max(1,
+                    Math.min(config.getSkillScriptTimeoutSeconds(), MAX_SCRIPT_TIMEOUT_SECONDS));
+        }
 
         // Register the skill_manage tool itself
         registry.register(new ToolEntry.Builder()
@@ -97,6 +121,18 @@ public class SkillTool {
     /**
      * Create a handler function that executes a script via ProcessBuilder.
      * Args are passed as --key value CLI arguments.
+     *
+     * <p>P0-5 R10（附录 A9）修正的三个真实风险：</p>
+     * <ol>
+     *   <li><b>无超时</b> → 加 {@code waitFor(timeout)}，超时后终止整个进程树并返回错误；</li>
+     *   <li><b>先读 stdout 再读 stderr 可能死锁</b> → 改为两路并发泵（与 {@code TerminalTool} 同方案）：
+     *       管道缓冲区（Windows 约 4KB）写满后子进程会阻塞，串行读取时
+     *       「脚本狂写 stderr 而主线程在读 stdout」会形成永久等待；</li>
+     *   <li><b>未关闭子进程 stdin</b> → 立即关闭，需要交互输入的脚本快速失败而非永久挂起。</li>
+     * </ol>
+     *
+     * <p>命令安全门禁（经 {@code CommandPolicy} 按 WRITE 确认、脚本哈希变更失效）属
+     * <b>P0-2 R14</b> 范围，本方法不提前引入，避免两个需求相互阻塞。</p>
      */
     private static Function<Map<String, Object>, String> createScriptHandler(Path skillDir, ToolDefinition td) {
         return args -> {
@@ -117,29 +153,95 @@ public class SkillTool {
                 command.add(entry.getValue() != null ? entry.getValue().toString() : "");
             }
 
-            try {
-                ProcessBuilder pb = new ProcessBuilder(command);
-                pb.directory(skillDir.toFile());
-                pb.redirectErrorStream(false);
-                Process p = pb.start();
-
-                String stdout = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-                String stderr = new String(p.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
-                int exitCode = p.waitFor();
-
-                if (exitCode != 0) {
-                    String errDetail = stderr.isBlank() ? "(no stderr output)" : stderr.trim();
-                    return ToolRegistry.toolError("Script failed (exit " + exitCode + "): " + errDetail);
-                }
-                return ToolRegistry.toolResult(Map.of("output", stdout.trim(), "exit_code", exitCode));
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return ToolRegistry.toolError("Script execution interrupted");
-            } catch (Exception e) {
-                logger.error("Script execution failed: {}", e.getMessage(), e);
-                return ToolRegistry.toolError("Script execution error: " + e.getMessage());
-            }
+            return runScriptWithTimeout(command, skillDir, td.getHandler(), scriptTimeoutSeconds);
         };
+    }
+
+    /**
+     * 以超时保护 + 两路并发泵执行一段命令行（技能脚本的唯一执行入口）。
+     *
+     * <p>从 handler lambda 里抽出来的理由：AC9（「超时被终止且无死锁」）需要能
+     * 在不构造真实技能目录、不污染全局 ToolRegistry 的前提下验证本方法；
+     * 直接测 lambda 则需要先把用户真技能注册进单例，既慢又有副作用。</p>
+     *
+     * @param command        参数数组形式的命令行（不用 shell 字符串拼接，CC-4）
+     * @param workDir        工作目录（技能目录）
+     * @param scriptName     脚本名，仅用于错误文案与日志
+     * @param timeoutSeconds 超时上限（秒）
+     * @return 统一格式的工具结果/错误 JSON
+     */
+    static String runScriptWithTimeout(List<String> command, Path workDir, String scriptName,
+                                       int timeoutSeconds) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(command);
+            pb.directory(workDir.toFile());
+            pb.redirectErrorStream(false);
+            Process p = pb.start();
+            // 禁止交互：立即关闭 stdin，等待输入的脚本会快速报错而非永久挂起
+            p.getOutputStream().close();
+
+            // 两路并发泵输出，消除串行读取的管道缓冲区死锁
+            CompletableFuture<String> stdoutFuture =
+                    CompletableFuture.supplyAsync(() -> pumpStream(p, true));
+            CompletableFuture<String> stderrFuture =
+                    CompletableFuture.supplyAsync(() -> pumpStream(p, false));
+
+            if (!p.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+                // 先杀后代再杀本体：只 destroyForcibly 父进程会让脚本派生的子进程
+                // 变成孤儿继续占着 CPU 与文件句柄（见 ProcessTerminator 类注释）
+                ProcessTerminator.destroyTree(p);
+                String partialErr = safeGet(stderrFuture);
+                logger.warn("技能脚本超时（{}s），已终止进程树: {}", timeoutSeconds, scriptName);
+                return ToolRegistry.toolError("技能脚本执行超时（" + timeoutSeconds + "s），已强制终止："
+                        + scriptName
+                        + (partialErr.isBlank() ? "" : "\n部分错误输出: " + partialErr.trim())
+                        + "\n请检查脚本是否存在等待输入、死循环或网络阻塞，"
+                        + "或在 config.yaml 提高 skill.script_timeout_seconds 后重试。");
+            }
+
+            int exitCode = p.exitValue();
+            String stdout = safeGet(stdoutFuture);
+            String stderr = safeGet(stderrFuture);
+
+            if (exitCode != 0) {
+                String errDetail = stderr.isBlank() ? "(no stderr output)" : stderr.trim();
+                return ToolRegistry.toolError("Script failed (exit " + exitCode + "): " + errDetail);
+            }
+            return ToolRegistry.toolResult(Map.of("output", stdout.trim(), "exit_code", exitCode));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return ToolRegistry.toolError("Script execution interrupted");
+        } catch (Exception e) {
+            logger.error("Script execution failed: {}", e.getMessage(), e);
+            return ToolRegistry.toolError("Script execution error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 泵干一路输出流（stdout 或 stderr）并返回全文。
+     *
+     * <p>读取失败返回空串而不抛异常：泵在异步线程上执行，异常会变成
+     * {@code ExecutionException} 掩盖真正的失败原因（退出码或超时）。</p>
+     */
+    private static String pumpStream(Process process, boolean stdout) {
+        try (InputStream stream = stdout ? process.getInputStream() : process.getErrorStream()) {
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            logger.debug("读取技能脚本{}失败: {}", stdout ? " stdout" : " stderr", e.getMessage());
+            return "";
+        }
+    }
+
+    /** 安全获取泵结果：异常/超时不影响主流程（已尽力终止进程）。 */
+    private static String safeGet(CompletableFuture<String> future) {
+        try {
+            return future.get(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "";
+        } catch (ExecutionException | TimeoutException e) {
+            return "";
+        }
     }
 
     public static String handle(Map<String, Object> args) {

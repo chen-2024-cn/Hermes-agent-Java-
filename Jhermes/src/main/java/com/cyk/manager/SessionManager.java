@@ -26,11 +26,23 @@ public class SessionManager {
     
     private final Path sessionsDir;
     private final Map<String, Session> activeSessions;
-    
+
+    /** 会话消息上限（P0-5 R6）：统一在此注入，避免每个 Session 各自硬编码。 */
+    private final int maxMessages;
+
     public SessionManager(Path dataDir) {
+        this(dataDir, Session.DEFAULT_MAX_MESSAGES);
+    }
+
+    /**
+     * @param dataDir     数据目录（{@code HERMES_HOME}）
+     * @param maxMessages 会话保留的消息上限；非法值回退到默认
+     */
+    public SessionManager(Path dataDir, int maxMessages) {
         this.sessionsDir = dataDir.resolve("memory").resolve("sessions");
         this.activeSessions = new ConcurrentHashMap<>();
-        
+        this.maxMessages = maxMessages >= 2 ? maxMessages : Session.DEFAULT_MAX_MESSAGES;
+
         try {
             Files.createDirectories(sessionsDir);
         } catch (IOException e) {
@@ -59,15 +71,18 @@ public class SessionManager {
     private Session loadSession(String sessionId) throws IOException {
         Path sessionFile = sessionsDir.resolve(sessionId + ".json");
 
+        Session session;
         if (Files.exists(sessionFile)) {
             //若磁盘存在则返回
             ObjectNode json = (ObjectNode) mapper.readTree(sessionFile.toFile());
             //将json转为session
-            Session session = Session.fromJson(sessionId, json);
-            return session;
+            session = Session.fromJson(sessionId, json);
+        } else {
+            session = new Session(sessionId);
         }
-
-        return new Session(sessionId);
+        // 上限统一由管理器注入（载入的旧会话也可能需要按新上限重新裁剪）
+        session.setMaxMessages(maxMessages);
+        return session;
     }
 
 

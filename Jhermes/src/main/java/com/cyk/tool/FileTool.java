@@ -20,6 +20,37 @@ public class FileTool {
     private static final int MAX_RESULTS = 100;
 
     /**
+     * {@code read_file} 未传 {@code limit} 时的默认读取行数（JH-SPEC-001 P0-5 R9）。
+     *
+     * <p>取值依据：2000 行足以一次读完绝大多数源码/配置文件，模型不再需要反复翻页；
+     * 即使读满，内容也会在 {@code ToolRegistry.dispatch} 被截断到 12,000 字符，
+     * 故不会因缺省值变大而撑爆上下文。</p>
+     */
+    static final int DEFAULT_READ_LIMIT = 2000;
+
+    /**
+     * 容错读取整型参数。
+     *
+     * <p>模型偶尔把数字传成字符串（{@code "limit": "10"}），旧的 {@code (Number)} 强转
+     * 会抛 ClassCastException；现在 dispatch 有 Throwable 边界不会崩进程，
+     * 但整次工具调用就白费了。在入口做容错解析，失败回退默认值。</p>
+     */
+    private static int readIntArg(Map<String, Object> args, String key, int defaultValue) {
+        Object value = args.get(key);
+        if (value instanceof Number n) {
+            return n.intValue();
+        }
+        if (value instanceof String s && !s.isBlank()) {
+            try {
+                return Integer.parseInt(s.trim());
+            } catch (NumberFormatException e) {
+                logger.warn("参数 {} 无法解析为整数：'{}'，已回退默认值 {}", key, s, defaultValue);
+            }
+        }
+        return defaultValue;
+    }
+
+    /**
      * 敏感凭据路径拦截（与 {@link TerminalTool} 共享 {@link SensitivePathGuard} 同一份黑名单）。
      *
      * <p>为什么文件工具也要拦：{@code run_command} 拦住了 {@code Get-Content ~/.ssh/id_rsa}，
@@ -56,8 +87,12 @@ public class FileTool {
             if (pathStr == null || pathStr.isBlank()) {
                 return ToolRegistry.toolError("Path parameter is required");
             }
-            int offset = args.containsKey("offset") ? ((Number) args.get("offset")).intValue() : 1;
-            int limit = args.containsKey("limit") ? ((Number) args.get("limit")).intValue() : 1;
+            int offset = readIntArg(args, "offset", 1);
+            // R9（附录 A7）：缺省 limit 由 1 行改为 DEFAULT_READ_LIMIT 行。
+            // 旧默认值让模型不传 limit 时只能拿到文件的第一行，不得不反复试探性调用
+            // （每次都是一整轮 LLM 往返 + 整份历史重发）。新默认值覆盖绝大多数源码文件，
+            // 且读出内容仍受 ToolRegistry 的 12,000 字符护栏二次截断，不会撑爆上下文。
+            int limit = readIntArg(args, "limit", DEFAULT_READ_LIMIT);
 
             //第二步：路径规范化
             //Paths.get(pathStr)：把字符串变成 Path 对象
@@ -88,8 +123,12 @@ public class FileTool {
 
             //第六步：截取需要的行
             //处理起始结束位置
-            int start = Math.max(0, offset - 1);//防止 offset = 0 时出现负数下标
-            int end = Math.min(lines.size(), start + limit);
+            // offset 可能超过文件实际行数（模型常猜一个很大的 offset），
+            // 不钳制会让 subList 抛 IllegalArgumentException: fromIndex > toIndex，
+            // 旧实现此处会直接把整次工具调用变成异常（现在被 dispatch 边界兜住，
+            // 但仍应返回「空内容 + 真实行数」让模型自行纠正）。
+            int start = Math.min(Math.max(0, offset - 1), lines.size());
+            int end = Math.min(lines.size(), start + Math.max(0, limit));
 
             List<String> result = lines.subList(start, end);
             String content = String.join("\n", result);
@@ -98,8 +137,12 @@ public class FileTool {
             return ToolRegistry.toolResult(Map.of(
                     "content", content,
                     "path", path,
-                    "total_lines", result.size(),
+                    // R9（附录 A7）：total_lines 必须是文件真实总行数，而非本次返回的行数。
+                    // 旧实现返回 result.size()，模型无法判断还剩多少内容、该把 offset
+                    // 设成多少，只能反复翻页试探。
+                    "total_lines", lines.size(),
                     "offset", start + 1,
+                    "limit", result.size(),
                     "truncated", end < lines.size()// 是否被截断（true=后面还有内容没读完）
             ));
 

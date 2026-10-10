@@ -315,6 +315,19 @@ public class HermesConfig {
         return readInt("agent.max_turns", Constants.DEFAULT_MAX_ITERATIONS);
     }
 
+    /**
+     * 会话持久化保留的消息条数上限（JH-SPEC-001 P0-5 R6）。
+     *
+     * <p>超限时按「回合组」整体裁剪（见 {@link com.cyk.bean.Session}），
+     * 而非按单条从头部删——后者会切出孤立 tool 消息使请求体非法。</p>
+     *
+     * <p>不写入默认配置文件（避免扰动旧用户的 config.yaml），缺省即用
+     * {@link com.cyk.bean.Session#DEFAULT_MAX_MESSAGES}。</p>
+     */
+    public int getSessionMaxMessages() {
+        return readInt("agent.session_max_messages", com.cyk.bean.Session.DEFAULT_MAX_MESSAGES);
+    }
+
     public String getBaseUrl() {
         String raw = (activeProfile != null && activeProfile.baseUrl() != null)
                 ? activeProfile.baseUrl()
@@ -467,6 +480,20 @@ public class HermesConfig {
     /** 触发知识提取所需的最少消息数。 */
     public int getMinMessagesForExtraction() {
         return readInt("extract.min_messages", 1);
+    }
+
+    // =========================================================================
+    // 技能配置（skill: 段）
+    // =========================================================================
+
+    /**
+     * 技能脚本执行超时（秒，JH-SPEC-001 P0-5 R10）。
+     *
+     * <p>缺省值取 {@link Constants#DEFAULT_SKILL_SCRIPT_TIMEOUT_SECONDS}，
+     * 与 {@code SkillTool} 共用同一来源以防两边漂移。</p>
+     */
+    public int getSkillScriptTimeoutSeconds() {
+        return readInt("skill.script_timeout_seconds", Constants.DEFAULT_SKILL_SCRIPT_TIMEOUT_SECONDS);
     }
 
     // =========================================================================

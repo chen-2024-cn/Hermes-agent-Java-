@@ -99,6 +99,15 @@ public final class Constants {
     public static final int DEFAULT_MAX_ITERATIONS = 90;
     public static final int DEFAULT_TIMEOUT_SECONDS = 300;
 
+    /**
+     * 技能脚本执行超时（秒）缺省值（JH-SPEC-001 P0-5 R10）。
+     *
+     * <p>改造前 {@code SkillTool} 执行脚本完全无超时：一个挂死的技能脚本会把整个
+     * 会话永久阻塞在此处（且无进程树清理）。置于 Constants 作为单一缺省值来源，
+     * 由 {@code HermesConfig} 与 {@code SkillTool} 共同引用，避免两边各写一份 60。</p>
+     */
+    public static final int DEFAULT_SKILL_SCRIPT_TIMEOUT_SECONDS = 60;
+
     // =========================================================================
     // Agent Identity and Core Prompts
     // =========================================================================
