@@ -1,6 +1,5 @@
 package com.cyk.prompt;
 
-import com.cyk.constant.Constants;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -22,8 +21,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>三类关键断言：</p>
  * <ol>
- *   <li><b>迁移保真</b>：声称「原样迁移」的段与 Constants 旧字符串逐字节相等——
- *       期 3 删除 Constants 前，这是防「迁移时手滑改字」的唯一防线；</li>
+ *   <li><b>迁移保真</b>：逐字节锚点测试已于期 2 验证 md 与旧 Constants 字符串相等并锁档；
+ *       期 3 删除 Constants 后退役为关键内容断言，继续防「段文本被意外改动」；</li>
  *   <li><b>条件工具名零泄漏</b>：恒注入段（identity/execution/terminal-output）
  *       不得出现任何按 requires 条件注入的工具名（rag_ 前缀、run_command、web_search 等），
  *       否则 RAG 或终端关闭时 AC2「装配结果不含未注册工具引用」必破；</li>
@@ -99,33 +98,42 @@ class PromptLoaderTest {
     }
 
     // =========================================================================
-    // 迁移保真锚点（期 3 删除 Constants 前防手滑）
+    // 迁移保真锚点（已于期 2 完成使命：当时逐字节验证了 md 与 Constants 旧串相等；
+    // 期 3 删除 Constants 后锚点退役，改由下方关键内容断言把守段文本不被意外改动）
     // =========================================================================
 
     @Test
-    @DisplayName("原样迁移的段与 Constants 旧字符串逐字节相等")
-    void verbatimSegmentsShouldMatchLegacyConstantsExactly() {
+    @DisplayName("原样迁移段保留关键内容（identity/memory/terminal-tool）")
+    void verbatimSegmentsShouldKeepKeyContent() {
         Map<String, PromptSegment> segments = byId();
 
         assertThat(segments.get("identity").content())
-                .isEqualTo(Constants.DEFAULT_AGENT_IDENTITY.strip());
+                .startsWith("你是Jhermes智能体")
+                .contains("不冗余啰嗦");
         assertThat(segments.get("memory").content())
-                .isEqualTo(Constants.MEMORY_GUIDANCE.strip());
+                .startsWith("你拥有跨会话持久记忆功能")
+                .contains("精简凝练");
         assertThat(segments.get("terminal-tool").content())
-                .isEqualTo(Constants.TERMINAL_TOOL_GUIDANCE.strip());
+                .startsWith("终端命令执行（run_command）")
+                .contains("【确认由宿主执行")
+                .contains("【被拒绝时如实转告并停止重试】")
+                .contains("timeout_seconds");
     }
 
     @Test
-    @DisplayName("rag 段与旧 RAG_GUIDANCE 的唯一差异：run_command 改为「终端命令」")
-    void ragSegmentShouldEqualLegacyTextExceptRunCommandReword() {
-        // rag 段按报备「原样迁移」，唯一有意偏差：旧文写死 run_command——
-        // terminal 关闭而 rag 开启时该引用即指向未注册工具（AC1 违例），改为泛称。
-        // 用替换式等值锚定：除这一处外不得有任何其它改动。
-        String expected = Constants.RAG_GUIDANCE.strip()
-                .replace("严禁用 run_command 搜索磁盘", "严禁用终端命令搜索磁盘");
+    @DisplayName("rag 段保留三段式结构且不引用 run_command（期 2 已验证的唯一有意偏差）")
+    void ragSegmentShouldKeepStructureWithoutRunCommandReference() {
+        // 旧 RAG_GUIDANCE 写死「严禁用 run_command 搜索磁盘」——terminal 关闭而
+        // rag 开启时该引用即指向未注册工具（AC1 违例），已在迁移时改为泛称
+        // 「严禁用终端命令搜索磁盘」（替换式等值锚点测试已在期 2 锁档验证）。
+        String rag = byId().get("rag").content();
 
-        assertThat(byId().get("rag").content()).isEqualTo(expected);
-        assertThat(byId().get("rag").content()).doesNotContain("run_command");
+        assertThat(rag).contains("【先扫清单原则（最重要）】")
+                .contains("【工具选择】")
+                .contains("【安全红线】")
+                .contains("严禁用终端命令搜索磁盘")
+                .contains("rag_list", "rag_search", "rag_index", "rag_delete");
+        assertThat(rag).doesNotContain("run_command");
     }
 
     // =========================================================================
@@ -233,7 +241,15 @@ class PromptLoaderTest {
                 .collect(Collectors.toMap(PromptSegment::id, Function.identity()));
         assertThat(byId).containsKeys(EXPECTED_IDS.toArray(String[]::new));
         assertThat(byId.get("identity").content()).isEqualTo("自定义身份提示词。");
-        assertThat(byId.get("memory").content()).isEqualTo(Constants.MEMORY_GUIDANCE.strip());
+        // 未被覆盖的段仍与 classpath 内置版一致（自引用比较，不依赖已退役的 Constants）
+        String builtinMemory = byIdBuiltIn("memory").content();
+        assertThat(byId.get("memory").content()).isEqualTo(builtinMemory);
+    }
+
+    /** 加载 classpath 内置版某段（无覆盖），供覆盖类测试做基准比较。 */
+    private static PromptSegment byIdBuiltIn(String id) {
+        return new PromptLoader(null).load().stream()
+                .filter(s -> s.id().equals(id)).findFirst().orElseThrow();
     }
 
     @Test
@@ -319,7 +335,7 @@ class PromptLoaderTest {
         assertThat(segments).extracting(PromptSegment::id).containsExactly("identity");
         // 空白项滤除后 tools 仅剩有效值；file 字段与内容按首条 identity.md 生效
         assertThat(segments.get(0).requires().tools()).containsExactly("run_command");
-        assertThat(segments.get(0).content()).isEqualTo(Constants.DEFAULT_AGENT_IDENTITY.strip());
+        assertThat(segments.get(0).content()).isEqualTo(byIdBuiltIn("identity").content());
     }
 
     @Test

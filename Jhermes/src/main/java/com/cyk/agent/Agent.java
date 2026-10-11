@@ -10,8 +10,14 @@ import com.cyk.http.LlmClient;
 import com.cyk.http.LlmRetryPolicy;
 import com.cyk.http.LlmTransportException;
 import com.cyk.http.ModelClient;
+import com.cyk.capability.CapabilityRegistry;
 import com.cyk.manager.MemoryManager;
 import com.cyk.manager.SessionManager;
+import com.cyk.manager.SkillManager;
+import com.cyk.prompt.ComposedPrompt;
+import com.cyk.prompt.PromptComposer;
+import com.cyk.prompt.PromptContext;
+import com.cyk.prompt.WorkingDirSnapshot;
 import com.cyk.tool.ToolRegistry;
 import com.cyk.tool.SkillTool;
 import com.cyk.ui.Ui;
@@ -54,7 +60,13 @@ public class Agent {
     private KnowledgeExtractor knowledgeExtractor;
     private SessionManager sessionManager;
     private MemoryManager memoryManager;
-    private SkillMatcher skillMatcher;
+
+    /**
+     * 系统提示词装配器（P0-3）：提示词分段、requires 判定与模板渲染全部下沉到
+     * prompt 包，Agent 只负责供给装配上下文（注册实况/目录快照/记忆/技能）。
+     * 无状态可共享：每回合调用 compose()，输入相同则输出逐字节相同（P0-4 R8 前缀稳定）。
+     */
+    private final PromptComposer promptComposer = new PromptComposer();
 
     /**
      * 已持久化到 session 的对话历史下标。
@@ -157,7 +169,6 @@ public class Agent {
         loadResumedHistory(resumeSessionId);
 
         this.memoryManager = MemoryManager.getInstance();//初始化 MemoryManager（加载 MEMORY.md / USER.md）
-        this.skillMatcher = new SkillMatcher();
 
         if (learningEnabled) {
             initializeLearningComponents();
@@ -780,166 +791,28 @@ public class Agent {
     }
 
     /**
-     * 构建「当前工作环境」上下文（Claude Code 式目录感知）。
+     * 构建系统提示词（P0-3：委托 {@link PromptComposer}）。
      *
-     * <p>JVM 的 {@code user.dir} 就是用户启动终端时所在的目录。把它连同顶层文件/目录
-     * 快照注入 system prompt，模型就能：
+     * <p>改造前这里是 90 行硬编码拼接：顺序靠代码行序、条件判据是配置项、
+     * 工具清单与 tools 数组重复、技能注入依赖 SkillMatcher 的历史文本匹配
+     *（新会话恒为空，附录 A19）。现在 Agent 只供给四项装配上下文：</p>
      * <ul>
-     *   <li>知道用户正在哪个项目里提问，主动用 search_files / read_file 探查而非凭空猜测；</li>
-     *   <li>正确生成相对路径（FileTool 的路径解析同样基于 user.dir）。</li>
+     *   <li>{@code CapabilityRegistry.from(toolRegistry)} —— 注册实况：requires 判定与
+     *       capabilities 渲染同源（R7，修复「配置开着但工具没注册上、指引照样注入」的 C-01）；</li>
+     *   <li>{@code WorkingDirSnapshot.capture()} —— 目录感知（原样迁移，期 4 叠加 R8 过滤）；</li>
+     *   <li>记忆快照 —— MemoryManager 预渲染文本，composer 作动态尾段；</li>
+     *   <li>技能清单 —— composer 经 SkillIndexBuilder 渲染紧凑索引（R9，正文按需 get）。</li>
      * </ul>
-     * 快照限制条数，避免大目录撑爆 prompt。</p>
-     */
-    private String buildWorkingDirectoryContext() {
-        Path cwd = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
-        StringBuilder sb = new StringBuilder();
-        sb.append("## 当前工作环境\n");
-        sb.append("- 工作目录（当前项目根目录）: ").append(cwd).append('\n');
-        sb.append("- 操作系统: ").append(System.getProperty("os.name")).append('\n');
-        sb.append("- 用户主目录: ").append(System.getProperty("user.home")).append('\n');
-        sb.append("- 文件工具中的相对路径均相对上述工作目录解析。")
-          .append("回答与本项目相关的问题前，优先用文件搜索/读取工具探查实际代码，禁止凭空猜测项目结构。\n");
-
-        List<String> entries = listTopLevelEntries(cwd, 50);
-        if (!entries.isEmpty()) {
-            sb.append("- 工作目录顶层内容:\n");
-            for (String entry : entries) {
-                sb.append("    ").append(entry).append('\n');
-            }
-        }
-        return sb.toString();
-    }
-
-    /**
-     * 列出目录顶层条目（目录名带 {@code /} 后缀），最多 {@code max} 条，超出时追加省略标记。
-     * 目录不可读（权限等）时返回空列表，绝不让快照失败影响对话启动。
-     */
-    private static List<String> listTopLevelEntries(Path dir, int max) {
-        List<String> names = new ArrayList<>();
-        try (var stream = Files.list(dir)) {
-            stream.sorted(Comparator.comparing(p -> p.getFileName().toString()))
-                    .forEach(p -> {
-                        if (names.size() <= max) {
-                            names.add(p.getFileName() + (Files.isDirectory(p) ? "/" : ""));
-                        }
-                    });
-        } catch (IOException e) {
-            logger.warn("无法列出工作目录 {}: {}", dir, e.getMessage());
-            return List.of();
-        }
-        if (names.size() > max) {
-            List<String> truncated = new ArrayList<>(names.subList(0, max));
-            truncated.add("...（共 " + names.size() + "+ 项，已截断，可用 search_files 进一步探查）");
-            return truncated;
-        }
-        return names;
-    }
-
-    /**
-     * 构建提示词
+     *
+     * <p>同一上下文多次调用结果逐字节相同（P0-4 R8 前缀稳定的基础）。</p>
      */
     private String buildSystemPrompt() {
-        StringBuilder prompt = new StringBuilder();
-
-        // 智能体提示词
-        prompt.append(Constants.DEFAULT_AGENT_IDENTITY).append("\n\n");
-
-        // 工作目录上下文（Claude Code 式：让模型感知用户启动终端时所在的项目目录）
-        prompt.append(buildWorkingDirectoryContext()).append("\n\n");
-
-        // 记忆提示词
-        prompt.append(Constants.MEMORY_GUIDANCE).append("\n\n");
-
-        // 工具强制使用提示词
-        prompt.append(Constants.TOOL_USE_ENFORCEMENT_GUIDANCE).append("\n\n");
-
-        // 终端输出格式规范（禁 Markdown、控换行——用户反馈的排版问题在提示词侧的约束）
-        prompt.append(Constants.TERMINAL_OUTPUT_GUIDANCE).append("\n\n");
-
-        // 执行规范
-        prompt.append(Constants.EXECUTION_DISCIPLINE_GUIDANCE).append("\n\n");
-
-        // 终端命令执行工具指引（run_command 已注册时才有意义，未启用则不注入避免误导模型）
-        if (config.isTerminalToolEnabled()) {
-            prompt.append(Constants.TERMINAL_TOOL_GUIDANCE).append("\n\n");
-        }
-
-        // 会话回忆
-        prompt.append(Constants.SESSION_SEARCH_GUIDANCE).append("\n\n");
-
-        // Skills 使用指引
-        prompt.append(Constants.SKILLS_GUIDANCE).append("\n\n");
-
-        // 网页搜索指引
-        prompt.append(Constants.WEB_SEARCH_GUIDANCE).append("\n\n");
-
-        // 知识库检索指引
-        prompt.append(Constants.RAG_GUIDANCE).append("\n\n");
-
-        // 平台提示（命令行模式）
-        String platformHint = Constants.PLATFORM_HINTS.get("cli");
-        if (platformHint != null) {
-            prompt.append(platformHint).append("\n\n");
-        }
-
-        // 记忆上下文
-        String memoryContext = memoryManager.getSystemPromptSnapshot();
-        if (!memoryContext.isEmpty()) {
-            prompt.append(memoryContext).append("\n\n");
-        }
-
-        // 可用工具列表
-        prompt.append("## Available Tools\n\n");
-        for (Map<String, Object> tool : toolDefinitions) {
-            Map<String, Object> function = (Map<String, Object>) tool.get("function");
-            if (function != null) {
-                prompt.append("- ").append(function.get("name"));
-                if (function.containsKey("description")) {
-                    String desc = (String) function.get("description");
-                    // 修剪长描述
-                    if (desc.length() > 200) {
-                        desc = desc.substring(0, 200) + "...";
-                    }
-                    prompt.append(": ").append(desc);
-                }
-                prompt.append("\n");
-            }
-        }
-
-        // 添加匹配到的可用技能
-        String skillContext = buildSkillContext();
-        if (!skillContext.isEmpty()) {
-            prompt.append("\n").append(skillContext).append("\n");
-        }
-
-        return prompt.toString();
-    }
-
-    private String buildSkillContext() {
-        String lastUserInput = "";
-        Set<String> recentTags = new HashSet<>();
-        for (int i = conversationHistory.size() - 1; i >= 0; i--) {
-            ModelMessage msg = conversationHistory.get(i);
-            if ("user".equals(msg.getRole()) && msg.getContent() != null) {
-                if (lastUserInput.isEmpty()) {
-                    lastUserInput = msg.getContent();
-                }
-                if (msg.getContent() != null) {
-                    for (String word : msg.getContent().toLowerCase().split("\\s+")) {
-                        if (word.length() >= 3) {
-                            recentTags.add(word);
-                        }
-                    }
-                }
-            }
-        }
-
-        if (lastUserInput.isEmpty()) {
-            return "";
-        }
-
-        List<SkillMatcher.Match> matches = skillMatcher.match(lastUserInput, recentTags);
-        return skillMatcher.buildSkillContext(matches);
+        ComposedPrompt composed = promptComposer.compose(new PromptContext(
+                CapabilityRegistry.from(toolRegistry),
+                WorkingDirSnapshot.capture(),
+                memoryManager.getSystemPromptSnapshot(),
+                SkillManager.getInstance().listAll()));
+        return composed.text();
     }
 
 }
