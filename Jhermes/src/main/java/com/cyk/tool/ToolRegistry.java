@@ -327,43 +327,111 @@ public class ToolRegistry {
     }
 
     /**
+     * 按工具集分组返回已注册工具（P0-3 能力派生的数据源）。
+     *
+     * <p>{@code CapabilityRegistry} 、{@code /help} 渲染与提示词「当前能力」段
+     * 均从本方法取数，与注册实况同源，不可能与真实可用工具漂移。</p>
+     *
+     * <p>返回结构：外层按工具集名字典序（TreeMap）、内层按工具名字典序，
+     * 全部不可变——保证多次调用输出顺序稳定（提示词前缀稳定性依赖，P0-4 R8）。</p>
+     *
+     * @return 工具集名 → 该集内工具条目（均已排序、不可变）
+     */
+    public Map<String, List<ToolEntry>> entriesByToolset() {
+        Map<String, List<ToolEntry>> grouped = new TreeMap<>();
+        for (ToolEntry entry : tools.values()) {
+            grouped.computeIfAbsent(entry.getToolset(), k -> new ArrayList<>()).add(entry);
+        }
+        Map<String, List<ToolEntry>> result = new LinkedHashMap<>();
+        grouped.forEach((toolset, list) -> {
+            list.sort(Comparator.comparing(ToolEntry::getName));
+            result.put(toolset, Collections.unmodifiableList(list));
+        });
+        return Collections.unmodifiableMap(result);
+    }
+
+    /**
+     * 仅供测试：清空全局单例中已注册的工具。
+     *
+     * <p>{@link #initialize} 本身会先清空再注册（幂等），本钩子供测试在
+     * 用例结束后复位全局状态，避免污染其它测试类。生产代码不得调用。</p>
+     */
+    public static void clearForTest() {
+        instance.tools.clear();
+    }
+
+    /**
      * 注册要使用的工具
      *
      * <p>接收调用方已加载好的配置，避免内部再次 {@code HermesConfig.load()}
      * 造成双份磁盘 IO 和两份可能不一致的配置对象。</p>
      *
+     * <p><b>工具集黑名单</b>（P0-3 R7）：{@code tools.disabled_toolsets} 中列出的
+     * 工具集直接不注册（连同指引段一并消失，由 CapabilityRegistry 派生保证），
+     * 模型完全感知不到——与 terminal_enabled 同一哲学：不注册比拦截更彻底。</p>
+     *
+     * <p><b>幂等</b>：入口先清空再注册，同一 JVM 内可反复以不同配置重建
+     *（矩阵测试与 {@code /model} 类运行期重载都依赖这一点，不残留上一轮工具）。</p>
+     *
      * @param config 已加载的配置（RAG 懒加载判断依赖 rag.enabled 等字段）
      */
     public static void initialize(com.cyk.config.HermesConfig config) {
+        // 幂等重入：先清空，避免反复 initialize 时残留/重复注册
+        instance.tools.clear();
+
         // 命令安全上下文初始化（P0-2）：构建策略、确认闸门、审计器。
         // 无论 terminal_enabled 与否都要初始化——SkillTool 的技能脚本执行同样经 CommandPolicy（R14）。
         com.cyk.security.SecurityContext.init(config);
 
-        FileTool.register(instance);
-        MemoryTool.register(instance);
-        // SkillTool 需要配置：技能脚本执行超时（P0-5 R10）由 skill.script_timeout_seconds 控制
-        SkillTool.register(instance, config);
-        WebSearchTool.register(instance);
-        FetchPageTool.register(instance);
+        Set<String> disabled = config.getDisabledToolsets();
 
-        // 终端命令执行工具（配置开关：tools.terminal_enabled，默认开启）
+        if (toolsetEnabled("file_operations", disabled)) {
+            FileTool.register(instance);
+        }
+        if (toolsetEnabled("memory", disabled)) {
+            MemoryTool.register(instance);
+        }
+        // SkillTool 需要配置：技能脚本执行超时（P0-5 R10）由 skill.script_timeout_seconds 控制
+        if (toolsetEnabled("skill", disabled)) {
+            SkillTool.register(instance, config);
+        }
+        if (toolsetEnabled("web", disabled)) {
+            WebSearchTool.register(instance);
+            FetchPageTool.register(instance);
+        }
+
+        // 终端命令执行工具：功能开关（tools.terminal_enabled）与工具集黑名单任一命中即不注册。
         // 关闭时不注册，模型完全感知不到 run_command 的存在——比提示词约束更彻底
-        if (config.isTerminalToolEnabled()) {
+        if (config.isTerminalToolEnabled() && toolsetEnabled("terminal", disabled)) {
             TerminalTool.register(instance);
-        } else {
+        } else if (!config.isTerminalToolEnabled()) {
             logger.info("终端工具已按配置禁用（tools.terminal_enabled=false）");
         }
 
-        // RAG 引擎（懒初始化：仅当配置启用且 pgvector 可用时注册）
-        try {
-            RagEngine ragEngine = RagEngine.create(config);
-            if (ragEngine != null) {
-                RagTool.setEngine(ragEngine);
-                RagTool.register(instance);
+        // RAG 引擎（懒初始化：仅当工具集未被禁用、配置启用且 pgvector 可用时注册）。
+        // 黑名单命中时连 RagEngine.create 都不调——避免无意义的数据库连接尝试。
+        if (toolsetEnabled("rag", disabled)) {
+            try {
+                RagEngine ragEngine = RagEngine.create(config);
+                if (ragEngine != null) {
+                    RagTool.setEngine(ragEngine);
+                    RagTool.register(instance);
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to initialize RAG engine: {}", e.getMessage());
             }
-        } catch (Exception e) {
-            logger.warn("Failed to initialize RAG engine: {}", e.getMessage());
         }
+    }
+
+    /**
+     * 工具集是否在黑名单之外（可注册）；命中黑名单时记 INFO 并返回 false。
+     */
+    private static boolean toolsetEnabled(String toolset, Set<String> disabledToolsets) {
+        if (disabledToolsets.contains(toolset)) {
+            logger.info("工具集 '{}' 已按配置禁用（tools.disabled_toolsets），相关工具不注册", toolset);
+            return false;
+        }
+        return true;
     }
 
 }

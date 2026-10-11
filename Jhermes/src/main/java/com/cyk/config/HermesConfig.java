@@ -10,11 +10,13 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class HermesConfig {
     private static final Logger logger = LoggerFactory.getLogger(HermesConfig.class);
@@ -116,7 +118,7 @@ public class HermesConfig {
         yamlMapper.writeValue(configPath.toFile(), config);
     }
 
-    private static Map<String, Object> createDefaultConfig() {
+    static Map<String, Object> createDefaultConfig() {
         Map<String, Object> cfg = new HashMap<>();
 
         // 配置模型
@@ -156,9 +158,12 @@ public class HermesConfig {
         extract.put("min_messages", 4);
         cfg.put("extract", extract);
 
-        // 配置工具
+        // 配置工具（P0-3 R7）
         Map<String, Object> tools = new HashMap<>();
-        tools.put("enabled", Arrays.asList("terminal", "file_operations"));
+        // disabled_toolsets: 启动时完全跳过注册的工具集列表（工具不注册，模型感知不到）。
+        // 旧默认键 tools.enabled 从未被读取（附录 A15 死配置），已删除；
+        // 旧配置文件里残留该键也无害——多余键只是被忽略（兼容性说明 CC-2）。
+        tools.put("disabled_toolsets", new ArrayList<String>());
         // 终端命令执行工具开关：默认开启；
         // 对安全敏感的用户可设 false 彻底禁用 run_command（工具不注册，模型感知不到）
         tools.put("terminal_enabled", true);
@@ -464,9 +469,63 @@ public class HermesConfig {
      *
      * <p>默认开启；安全敏感用户可在 config.yaml 设 {@code tools.terminal_enabled: false}
      * 彻底禁用——工具不会注册，模型完全感知不到它的存在（比提示词约束更彻底）。</p>
+     *
+     * <p>与 {@link #getDisabledToolsets()} 的关系：两者都能关掉终端工具，
+     * 语义不同——本开关是「功能级布尔量」，disabled_toolsets 是「工具集级黑名单」，
+     * 任一命中即不注册（黑名单优先，见 {@code ToolRegistry.initialize}）。</p>
      */
     public boolean isTerminalToolEnabled() {
         return readBoolean("tools.terminal_enabled", true);
+    }
+
+    /**
+     * 已知工具集名称（与 {@code com.cyk.tool} 包中各 {@code ToolEntry.toolset} 一致）。
+     *
+     * <p>仅用于对 {@code tools.disabled_toolsets} 做拼写检查（WARN 提示），
+     * 不做硬拦截——未来新增工具集时旧版本读取新配置仍能工作（向前兼容）。</p>
+     */
+    public static final Set<String> KNOWN_TOOLSETS =
+            Set.of("file_operations", "memory", "skill", "web", "terminal", "rag");
+
+    /**
+     * 读取 {@code tools.disabled_toolsets}：启动时完全跳过注册的工具集黑名单（P0-3 R7）。
+     *
+     * <p>设计要点：</p>
+     * <ul>
+     *   <li><b>不注册的禁用</b>：被禁工具集的工具根本不进 {@code ToolRegistry}，
+     *       模型无法感知也无法调用——比提示词约束更彻底（与 terminal_enabled 同哲学）；</li>
+     *   <li><b>宽容解析</b>：键缺失 / 类型不符 / 条目空白都安全降级为空集或跳过该条目，
+     *       绝不因配置写错让启动失败；</li>
+     *   <li><b>拼写检查</b>：不在 {@link #KNOWN_TOOLSETS} 中的条目记 WARN（防
+     *       {@code file_operation} 少写 s 导致「以为禁了其实没禁」），但仍原样返回。</li>
+     * </ul>
+     *
+     * @return 工具集名称的不可变集合；未配置时返回空集（即全部启用）
+     */
+    public Set<String> getDisabledToolsets() {
+        Object raw = getFromYml("tools.disabled_toolsets", null);
+        if (raw == null) {
+            return Set.of();
+        }
+        if (!(raw instanceof List<?> list)) {
+            logger.warn("tools.disabled_toolsets 应为字符串列表，实际为 {}，已忽略该项",
+                    raw.getClass().getSimpleName());
+            return Set.of();
+        }
+        Set<String> result = new LinkedHashSet<>();
+        for (Object item : list) {
+            String name = asString(item);
+            if (name == null || name.isBlank()) {
+                continue;
+            }
+            name = name.trim();
+            if (!KNOWN_TOOLSETS.contains(name)) {
+                logger.warn("tools.disabled_toolsets 含未知工具集 '{}'（已知：{}），请检查拼写",
+                        name, KNOWN_TOOLSETS);
+            }
+            result.add(name);
+        }
+        return Collections.unmodifiableSet(result);
     }
 
     // =========================================================================

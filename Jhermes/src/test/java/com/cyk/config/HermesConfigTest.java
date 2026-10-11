@@ -2,7 +2,9 @@ package com.cyk.config;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.*;
@@ -300,5 +302,94 @@ class HermesConfigTest {
         config.applyModelAlias("pro");
 
         assertThat(config.getBaseUrl()).isEqualTo("https://pro.example.com/v1");
+    }
+
+    // =========================================================================
+    // tools.disabled_toolsets 解析（P0-3 R7）
+    // =========================================================================
+
+    /** 在基线配置上追加 tools 段。 */
+    private static Map<String, Object> withTools(Object toolsSection) {
+        Map<String, Object> data = baseData();
+        data.put("tools", toolsSection);
+        return data;
+    }
+
+    @Test
+    void disabledToolsetsShouldParseFromStringList() {
+        Map<String, Object> tools = new HashMap<>();
+        tools.put("disabled_toolsets", List.of("web", "rag"));
+
+        HermesConfig config = newConfig(withTools(tools));
+
+        assertThat(config.getDisabledToolsets()).containsExactly("web", "rag");
+    }
+
+    @Test
+    void disabledToolsetsShouldTrimAndSkipBlankEntries() {
+        Map<String, Object> tools = new HashMap<>();
+        tools.put("disabled_toolsets", Arrays.asList("  web ", "", null, "   "));
+
+        HermesConfig config = newConfig(withTools(tools));
+
+        assertThat(config.getDisabledToolsets()).containsExactly("web");
+    }
+
+    @Test
+    void disabledToolsetsShouldKeepUnknownNamesWithWarnOnly() {
+        // 拼写错误（file_operation 少 s）：WARN 提示但原样返回——
+        // 硬拦会阻断「新版本工具集名 + 旧版本程序」的向前兼容
+        Map<String, Object> tools = new HashMap<>();
+        tools.put("disabled_toolsets", List.of("file_operation", "future_set"));
+
+        HermesConfig config = newConfig(withTools(tools));
+
+        assertThat(config.getDisabledToolsets()).containsExactly("file_operation", "future_set");
+    }
+
+    @Test
+    void disabledToolsetsShouldBeEmptyWhenAbsent() {
+        HermesConfig config = newConfig(baseData()); // 无 tools 段
+
+        assertThat(config.getDisabledToolsets()).isEmpty();
+        assertThat(config.isTerminalToolEnabled()).isTrue(); // 缺省仍全开，行为不变
+    }
+
+    @Test
+    void disabledToolsetsShouldDegradeGracefullyOnWrongType() {
+        // 配置写错（字符串而非列表）不得让启动失败：降级空集 + WARN
+        HermesConfig config = newConfig(withTools(
+                new HashMap<>(Map.of("disabled_toolsets", "web"))));
+
+        assertThat(config.getDisabledToolsets()).isEmpty();
+    }
+
+    @Test
+    void disabledToolsetsResultShouldBeImmutable() {
+        Map<String, Object> tools = new HashMap<>();
+        tools.put("disabled_toolsets", List.of("web"));
+        HermesConfig config = newConfig(withTools(tools));
+
+        assertThatThrownBy(() -> config.getDisabledToolsets().add("rag"))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    // =========================================================================
+    // 默认配置形态（AC5：tools.enabled 死配置不得复活）
+    // =========================================================================
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void defaultConfigToolsSectionShouldUseDisabledToolsetsNotEnabled() {
+        Map<String, Object> cfg = HermesConfig.createDefaultConfig();
+        Map<String, Object> tools = (Map<String, Object>) cfg.get("tools");
+
+        // 旧键 tools.enabled 从未被读取（附录 A15），不得再出现在新用户默认配置里
+        assertThat(tools).doesNotContainKey("enabled");
+        // 新键 disabled_toolsets 缺省为空列表（全部工具可用，行为与升级前一致）
+        assertThat(tools.get("disabled_toolsets")).isInstanceOf(List.class);
+        assertThat((List<Object>) tools.get("disabled_toolsets")).isEmpty();
+        // terminal_enabled 保留（旧开关兼容，P0-2 已交付行为不变）
+        assertThat(tools.get("terminal_enabled")).isEqualTo(true);
     }
 }

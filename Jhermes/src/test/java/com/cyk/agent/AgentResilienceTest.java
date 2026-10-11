@@ -148,13 +148,15 @@ class AgentResilienceTest {
     @Test
     @DisplayName("工具抛 ClassCastException：模型收到 error JSON，会话继续")
     void toolHandlerExceptionBecomesErrorJson() {
-        registerThrowingProbeTool();
-
         ScriptedLlm llm = new ScriptedLlm()
                 .pushResponse(AgentTestSupport.toolCallResponse("call_1", PROBE_TOOL, "{}"))
                 .pushResponse(AgentTestSupport.textResponse("工具出错了，我换个办法"));
 
         Agent agent = AgentTestSupport.newAgent(dataDir, llm);
+        // 探针必须在 Agent 构造之后注册：构造会触发 ToolRegistry.initialize()，
+        // 而 initialize 自 P0-3 起是幂等重建（先清空再注册，矩阵测试依赖），
+        // 先注册探针会被清空（这正是「运行期重载不残留旧工具」的生产语义）。
+        registerThrowingProbeTool();
         assertThatCode(() -> agent.processUserMessage("试试这个工具")).doesNotThrowAnyException();
 
         String toolResult = contentOfFirstRole(agent, "tool");
