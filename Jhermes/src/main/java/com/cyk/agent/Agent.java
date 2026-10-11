@@ -224,7 +224,7 @@ public class Agent {
      *
      * <p>包级可见，不进入公共 API（与 {@code clearForTest} 等既有接缝惯例一致）。</p>
      */
-    CommandOutcome dispatchCommandForTest(String input, java.util.function.Consumer<String> output) {
+    CommandOutcome dispatchCommandForTest(String input, Consumer<String> output) {
         return slashCommands.dispatch(input, new SlashCommandContext(
                 output, CapabilityRegistry.from(toolRegistry), this::retryLastTurn));
     }

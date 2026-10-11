@@ -14,7 +14,9 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -150,13 +152,13 @@ class HelpWiringTest {
     @Test
     @DisplayName("配置变体：disabled_toolsets 生效后 /help 工具表随之收缩（配置→注册→帮助全链路）")
     void helpShouldShrinkWhenToolsetsAreDisabled() {
-        HermesConfig config = new HermesConfig(null, new java.util.HashMap<>(java.util.Map.of(
-                "tools", java.util.Map.of("terminal_enabled", true,
+        HermesConfig config = new HermesConfig(null, new HashMap<>(Map.of(
+                "tools", Map.of("terminal_enabled", true,
                         "disabled_toolsets", List.of("web", "memory")),
-                "rag", java.util.Map.of("enabled", false),
-                "extract", java.util.Map.of("enabled", false),
-                "security", java.util.Map.of("audit_enabled", false),
-                "agent", java.util.Map.of("max_turns", 5))));
+                "rag", Map.of("enabled", false),
+                "extract", Map.of("enabled", false),
+                "security", Map.of("audit_enabled", false),
+                "agent", Map.of("max_turns", 5))));
         Agent agent = AgentTestSupport.newAgent(dataDir, new ScriptedLlm(), config);
 
         String help = String.join("\n", capture(agent, "/help"));
