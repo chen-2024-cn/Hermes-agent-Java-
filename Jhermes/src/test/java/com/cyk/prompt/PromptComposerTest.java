@@ -1,9 +1,7 @@
 package com.cyk.prompt;
 
 import com.cyk.bean.Skill;
-import com.cyk.bean.ToolEntry;
 import com.cyk.capability.CapabilityRegistry;
-import com.cyk.tool.ToolRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -26,14 +24,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class PromptComposerTest {
 
-    /** 满配注册实况：六工具集全注册。 */
-    private static final Map<String, List<String>> FULL_TOOLSETS = Map.of(
-            "file_operations", List.of("read_file", "write_file"),
-            "memory", List.of("memory_save"),
-            "skill", List.of("skill_manage"),
-            "web", List.of("web_search", "fetch_page"),
-            "terminal", List.of("run_command"),
-            "rag", List.of("rag_search", "rag_list"));
+    /** 满配注册实况：六工具集全注册（与生产全开形态一致）。 */
+    private static final Map<String, List<String>> FULL_TOOLSETS = PromptComposerTestSupport.FULL_TOOLSETS;
 
     /** manifest 全段 + 记忆尾段的注入序（= 前缀序，P0-4 R8）。 */
     private static final List<String> FULL_ORDER = List.of(
@@ -44,41 +36,27 @@ class PromptComposerTest {
     private final PromptComposer composer = new PromptComposer(new PromptLoader(null));
 
     // =========================================================================
-    // 测试脚手架
+    // 测试脚手架（实体构造委托 {@link PromptComposerTestSupport}，与其他装配测试共享）
     // =========================================================================
 
     private static CapabilityRegistry caps(Map<String, List<String>> toolsetTools) {
-        ToolRegistry registry = new ToolRegistry();
-        toolsetTools.forEach((toolset, names) -> names.forEach(name -> registry.register(
-                new ToolEntry.Builder()
-                        .name(name)
-                        .toolset(toolset)
-                        .schema(Map.of("description", name,
-                                "parameters", Map.of("type", "object", "properties", Map.of())))
-                        .handler(args -> "ok")
-                        .build())));
-        return CapabilityRegistry.from(registry);
+        return PromptComposerTestSupport.capabilitiesOf(toolsetTools);
     }
 
     private static CapabilityRegistry fullCaps() {
-        return caps(FULL_TOOLSETS);
+        return PromptComposerTestSupport.fullCapabilities();
     }
 
     private static WorkingDirSnapshot workDir() {
-        return new WorkingDirSnapshot(Path.of("C:\\proj"), "Windows 11",
-                "C:\\Users\\tester", List.of("pom.xml", "src/"));
+        return PromptComposerTestSupport.workDir();
     }
 
     private static Skill skill(String name, String description, String content) {
-        Skill s = new Skill();
-        s.setName(name);
-        s.setDescription(description);
-        s.setContent(content);
-        return s;
+        return PromptComposerTestSupport.skill(name, description, content);
     }
 
     private static PromptContext context(CapabilityRegistry capabilities, String memory, List<Skill> skills) {
-        return new PromptContext(capabilities, workDir(), memory, skills);
+        return PromptComposerTestSupport.contextWith(capabilities, memory, skills);
     }
 
     // =========================================================================
@@ -129,9 +107,9 @@ class PromptComposerTest {
     void capabilitiesRenderingShouldBeCompactAndSorted() {
         String rendered = PromptComposer.renderCapabilities(fullCaps());
 
-        assertThat(rendered).contains("- file_operations: read_file, write_file");
+        assertThat(rendered).contains("- file_operations: grep_files, read_file, search_files, write_file");
         assertThat(rendered).contains("- web: fetch_page, web_search"); // 集内字典序
-        assertThat(rendered).contains("- rag: rag_list, rag_search");
+        assertThat(rendered).contains("- rag: rag_delete, rag_index, rag_list, rag_search");
         // 与 tools 数组纯重复的描述文本不再出现（旧 Available Tools 清单的教训）
         assertThat(rendered).doesNotContain("description");
         // 行序 = 工具集字典序

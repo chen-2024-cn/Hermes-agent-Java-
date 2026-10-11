@@ -17,19 +17,30 @@ import java.util.Optional;
  *   <li>{@code totalChars()} → 预算实测（AC2 的字符侧证据；token 侧在 P0-4 用 prompt_tokens 复核）。</li>
  * </ul>
  *
- * @param text     完整系统提示词（已 strip，段间以空行分隔）
- * @param segments 逐段装配明细（有序，含跳过段；不可变）
+ * @param text         完整系统提示词（已 strip，段间以空行分隔）
+ * @param segments     逐段装配明细（有序，含跳过段；不可变）
+ * @param authoredText <b>静态创作段前缀</b>：仅含 manifest 声明的分段（不含记忆等动态尾段）。
+ *                     两个用途——① 一致性自检只扫这部分（用户记忆里提到某个工具名
+ *                     属用户数据，不在「我们写的指引不得引用未注册工具」约束域内）；
+ *                     ② P0-4 前缀缓存的度量口径：这部分同上下文下逐字节稳定，
+ *                     而尾段跨会话可变，分开口径才能真实评估缓存命中率
  */
-public record ComposedPrompt(String text, List<SegmentRender> segments) {
+public record ComposedPrompt(String text, List<SegmentRender> segments, String authoredText) {
 
     public ComposedPrompt {
         text = text == null ? "" : text;
         segments = segments == null ? List.of() : List.copyOf(segments);
+        authoredText = authoredText == null ? "" : authoredText;
     }
 
     /** 完整提示词字符数（预算口径；P0-4 换算 token 用）。 */
     public int totalChars() {
         return text.length();
+    }
+
+    /** 静态前缀字符数（前缀缓存可命中部分的规模）。 */
+    public int authoredChars() {
+        return authoredText.length();
     }
 
     /** 按 id 查某段的装配明细。 */

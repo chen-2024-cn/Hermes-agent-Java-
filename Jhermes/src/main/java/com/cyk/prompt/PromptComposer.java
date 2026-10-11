@@ -102,6 +102,9 @@ public final class PromptComposer {
             details.add(SegmentRender.injected(segment.id(), body.length()));
         }
 
+        // 静态创作段前缀定格于追加动态尾段之前（供一致性自检与 P0-4 缓存度量）
+        String authoredText = text.toString().strip();
+
         // 动态记忆尾段：MEMORY.md/USER.md 预渲染快照，非空才注入（放在段序末尾——
         // 其内容跨会话可变，置于尾部使前面的静态段保持前缀稳定，P0-4 R8）
         String memory = context.memorySnapshot().strip();
@@ -115,7 +118,7 @@ public final class PromptComposer {
             details.add(SegmentRender.skipped(MEMORY_SNAPSHOT_ID, "无长期记忆内容"));
         }
 
-        ComposedPrompt composed = new ComposedPrompt(text.toString().strip(), details);
+        ComposedPrompt composed = new ComposedPrompt(text.toString().strip(), details, authoredText);
         logger.debug("系统提示词装配完成：{} 字符，注入 {} 段，跳过 {} 段",
                 composed.totalChars(), composed.injectedSegments().size(),
                 composed.skippedSegments().size());

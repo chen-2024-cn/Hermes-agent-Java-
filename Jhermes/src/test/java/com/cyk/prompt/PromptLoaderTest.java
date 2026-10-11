@@ -143,19 +143,17 @@ class PromptLoaderTest {
     @Test
     @DisplayName("恒注入段不得引用任何条件注入的工具名（AC2 前置纪律）")
     void alwaysOnSegmentsMustNotReferenceConditionalToolNames() {
-        // RAG/终端/web 关闭时这些工具不注册；恒注入段若引用它们，
-        // AC2「rag.enabled=false 时装配结果不含任何 rag_ 字样」必破。
-        List<String> forbidden = List.of(
-                "rag_", "run_command", "web_search", "fetch_page",
-                "skill_manage", "memory_save", "memory_get");
-
+        // 恒注入段无论能力如何都在提示词里，故其中<b>任何</b> snake_case 工具名都是隐患：
+        // 该工具被禁用（disabled_toolsets）或初始化失败（RAG 连不上库）时，
+        // AC2「装配结果不含未注册工具引用」即被打破。
+        // 判据用一致性自检器而非人工枚举黑名单：传空工具名集合，
+        // 凡形似工具名且不在白名单者一律违规——新增段位自动受同一约束，无需维护清单。
         for (String id : List.of("identity", "working-dir", "execution",
                 "terminal-output", "capabilities")) {
             String content = byId().get(id).content();
-            for (String toolName : forbidden) {
-                assertThat(content).as("恒注入段 %s 不得引用 %s", id, toolName)
-                        .doesNotContain(toolName);
-            }
+            assertThat(PromptConsistencyChecker.checkText(content, java.util.Set.of()))
+                    .as("恒注入段 %s 不得出现任何工具名形态的词", id)
+                    .isEmpty();
         }
     }
 

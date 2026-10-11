@@ -16,6 +16,7 @@ import com.cyk.manager.SessionManager;
 import com.cyk.manager.SkillManager;
 import com.cyk.prompt.ComposedPrompt;
 import com.cyk.prompt.PromptComposer;
+import com.cyk.prompt.PromptConsistencyChecker;
 import com.cyk.prompt.PromptContext;
 import com.cyk.prompt.WorkingDirSnapshot;
 import com.cyk.tool.ToolRegistry;
@@ -804,11 +805,16 @@ public class Agent {
      * <p>同一上下文多次调用结果逐字节相同（P0-4 R8 前缀稳定的基础）。</p>
      */
     private String buildSystemPrompt() {
+        CapabilityRegistry capabilities = CapabilityRegistry.from(toolRegistry);
         ComposedPrompt composed = promptComposer.compose(new PromptContext(
-                CapabilityRegistry.from(toolRegistry),
+                capabilities,
                 WorkingDirSnapshot.capture(),
                 memoryManager.getSystemPromptSnapshot(),
                 SkillManager.getInstance().listAll()));
+        // R6 一致性自检：提示词中出现「疑似工具名但未注册」→ WARN（不阻断会话）。
+        // 只扫静态创作段（记忆尾段属用户数据，见 checker 说明）；
+        // installSystemPrompt 每次运行只调一次，不会刷屏。
+        PromptConsistencyChecker.warnIfInconsistent(composed, capabilities);
         return composed.text();
     }
 
