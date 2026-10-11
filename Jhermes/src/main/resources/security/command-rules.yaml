@@ -1,0 +1,253 @@
+# ============================================================================
+# Jhermes 命令策略内置规则表（JH-SPEC-001 P0-2 R3/R4/R5/R6）
+# ============================================================================
+# 匹配语义见 com.cyk.security.CommandRule：
+#   match.exe        命中任一可执行名（归一化：去路径/去扩展名/小写）
+#   match.sub        子命令命中任一（可选）
+#   match.flags_any  段至少含其中一个标志（可选）
+#   match.flags_none 段含其中任一即本规则失配（只读白名单排除危险变体）
+#   match.args_any   参数/引号内容包含其中一子串（识别特定目标，可选）
+#   platform         windows / unix / any；缺省=不限（分段器已在两平台通用解析）
+#   level            READ_ONLY / WRITE / DANGEROUS / BLOCKED
+#
+# 决策：一条命令拆分出的所有段分别匹配，取最严一档（BLOCKED > DANGEROUS > ...）；
+#       无任何规则命中的段按 WRITE（保守默认，见 CommandPolicy）；
+#       BLOCKED 由 6 条既有灾难规则迁入并补 PowerShell 等价物（R4）。
+#
+# 用户覆盖：~/.jhermes/security/rules.yaml（同 id 覆盖，其余合并；
+#          加载失败回退本内置表并告警，绝不因此放宽——见 R3）
+version: 1
+
+rules:
+  # ==========================================================================
+  # BLOCKED —— 系统级灾难，任何标志都不可绕过，永不执行（R4/R5）
+  # 迁移自 TerminalTool 的 6 条灾难正则 + PowerShell/cmd 等价物
+  # ==========================================================================
+
+  # --- 磁盘与分区 ---
+  - id: blocked-format-disk
+    level: BLOCKED
+    reason: 格式化磁盘/分区，整机数据不可恢复
+    match: { exe: ["format", "diskpart", "mkfs", "mkfs.ext4", "mkfs.xfs", "mke2fs", "format-volume", "clear-disk"] }
+
+  - id: blocked-dd-to-device
+    level: BLOCKED
+    reason: dd 直写设备可摧毁分区表/文件系统
+    match: { exe: ["dd"], args_any: ["if=", "of=/dev/"] }
+
+  # --- 关机 / 重启 ---
+  - id: blocked-shutdown
+    level: BLOCKED
+    reason: 关机/重启系统，中断一切运行中的任务
+    match: { exe: ["shutdown", "stop-computer", "restart-computer", "halt", "poweroff", "init"] }
+
+  # --- 删除根目录/家目录/整盘、kill PID1、fork 炸弹：依赖路径目标或难以结构化，
+  #     由 CommandPolicy 用精确的路径语义判定（见 destructiveDeleteLevel / compoundPatterns），
+  #     不在此用 args_any 子串匹配——子串 "/" 会误伤 rm -rf ./target 这类工作区内合法删除。
+
+  # ==========================================================================
+  # DANGEROUS —— 强确认（键入 yes），非交互一律拒绝（R5/R7）
+  # ==========================================================================
+
+  # --- 版本控制历史改写 ---
+  - id: dangerous-git-force-push
+    level: DANGEROUS
+    reason: 强制推送会改写远端历史，可能丢失他人提交
+    match: { exe: ["git"], sub: ["push"], flags_any: ["-f", "--force", "--force-with-lease"] }
+
+  - id: dangerous-git-reset-hard
+    level: DANGEROUS
+    reason: hard reset 丢弃本地提交与未暂存改动
+    match: { exe: ["git"], sub: ["reset"], flags_any: ["--hard"] }
+
+  - id: dangerous-git-clean
+    level: DANGEROUS
+    reason: git clean 删除未跟踪文件与目录，不可恢复
+    match: { exe: ["git"], sub: ["clean"], flags_any: ["-f", "--force", "-d", "-fd", "-x"] }
+
+  - id: dangerous-git-branch-delete-force
+    level: DANGEROUS
+    reason: 强制删除分支会丢失该分支独有提交
+    match: { exe: ["git"], sub: ["branch"], flags_any: ["-D", "--delete", "--force"] }
+
+  - id: dangerous-git-filter-branch
+    level: DANGEROUS
+    reason: filter-branch 改写整个仓库历史
+    match: { exe: ["git"], sub: ["filter-branch", "filter-repo"] }
+
+  # --- 注册表 / 服务 / 系统配置 ---
+  - id: dangerous-reg-write
+    level: DANGEROUS
+    reason: 写入/删除注册表项，可能破坏系统配置
+    match: { exe: ["reg"], sub: ["add", "delete"] }
+
+  - id: dangerous-sc-service
+    level: DANGEROUS
+    reason: 创建/删除/停止系统服务
+    match: { exe: ["sc"], sub: ["delete", "stop", "config", "create"] }
+
+  - id: dangerous-systemctl-stop
+    level: DANGEROUS
+    reason: 停止系统服务
+    match: { exe: ["systemctl", "service"], sub: ["stop", "disable", "mask"] }
+
+  - id: dangerous-set-itemproperty-hklm
+    level: DANGEROUS
+    reason: 修改 HKLM 机器级注册表
+    match: { exe: ["set-itemproperty"], args_any: ["hklm"] }
+
+  - id: dangerous-write-sudoers
+    level: DANGEROUS
+    reason: 写入 sudoers 可提权
+    match: { exe: ["tee", "echo", "bash", "sh"], args_any: ["/etc/sudoers", "visudo"] }
+
+  # --- 提权 ---
+  - id: dangerous-sudo
+    level: DANGEROUS
+    reason: 以 root 权限执行，绕过普通用户边界
+    match: { exe: ["sudo", "su", "doas", "runas"] }
+
+  - id: dangerous-chmod-777
+    level: DANGEROUS
+    reason: chmod 777 / takeown 放开关键路径权限
+    match: { exe: ["chmod"], args_any: ["777", "-r 777"] }
+
+  - id: dangerous-takeown
+    level: DANGEROUS
+    reason: 夺取文件所有权可绕过 ACL
+    match: { exe: ["takeown", "icacls"], flags_any: ["/f", "/grant", "/reset"] }
+
+  - id: dangerous-start-process-runas
+    level: DANGEROUS
+    reason: 以管理员身份启动进程
+    match: { exe: ["start-process"], args_any: ["runas", "-verb"] }
+
+  # --- 下载并执行 / 外发数据 ---
+  # 注：「网络抓取管道给 shell」（curl x | sh、wget | bash、iwr | iex）属跨段复合模式，
+  #    单段规则无法表达（管道会切成两段），由 CommandPolicy 做整命令级复合检测。
+
+  - id: dangerous-invoke-expression
+    level: DANGEROUS
+    reason: 动态执行下载或构造的代码，无法静态审计（iwr|iex 的 iex 段即命中此规则）
+    match: { exe: ["iex", "invoke-expression"] }
+
+  - id: dangerous-encoded-command
+    level: DANGEROUS
+    reason: Base64 编码的 PowerShell 载荷，隐藏真实意图
+    match: { exe: ["powershell", "pwsh"], flags_any: ["-encodedcommand", "-enc"] }
+
+  - id: dangerous-downloadstring-exec
+    level: DANGEROUS
+    reason: 下载字符串并执行（DownloadString + IEX 组合）
+    match: { args_any: ["downloadstring", "downloadfile", "(new-object net.webclient)"] }
+
+  - id: dangerous-reverse-shell
+    level: DANGEROUS
+    reason: 疑似反弹 shell，可远程控制本机
+    match: { args_any: ["/dev/tcp/", "nc -e", "socket.socket"] }
+
+  - id: dangerous-exfil-post-file
+    level: DANGEROUS
+    reason: 携带本地数据外发（POST 请求体 / 上传文件）
+    match: { exe: ["curl", "wget", "invoke-webrequest", "iwr"],
+             flags_any: ["--data", "--data-binary", "--data-raw", "--upload-file", "--in-file", "-t", "-d"] }
+
+  - id: dangerous-lolbin-download
+    level: DANGEROUS
+    reason: 利用系统内置二进制下载可执行文件
+    match: { exe: ["certutil", "bitsadmin", "mshta"], args_any: ["-urlcache", "/transfer", "http"] }
+
+  - id: dangerous-base64-exec
+    level: DANGEROUS
+    reason: base64 解码后经管道执行
+    match: { exe: ["base64"], flags_any: ["-d", "--decode"] }
+
+  # ==========================================================================
+  # WRITE —— y/n/a 确认（修改文件或状态，范围在工作区内）
+  # 未知命令的默认档由 CommandPolicy 兜底，这里只列已知的常见写操作，
+  # 目的是让「同类放行(a)」能按 exe+sub 精确归组。
+  # ==========================================================================
+
+  - id: write-git-commit
+    level: WRITE
+    reason: 提交/合并/变基会改写本地仓库状态
+    match: { exe: ["git"], sub: ["commit", "merge", "rebase", "checkout", "stash", "checkout", "switch", "restore", "add", "rm", "mv", "tag"] }
+
+  - id: write-pkg-mutate
+    level: WRITE
+    reason: 安装/卸载依赖会改动 node_modules 与 lockfile
+    match: { exe: ["npm", "yarn", "pnpm", "pip", "pip3"],
+             sub: ["install", "i", "uninstall", "remove", "update", "upgrade", "ci", "add"] }
+
+  - id: write-mkdir-touch
+    level: WRITE
+    reason: 创建/修改文件系统条目
+    match: { exe: ["mkdir", "touch", "mv", "cp", "copy", "move", "new-item", "set-content", "add-content", "out-file"] }
+
+  - id: write-taskkill
+    level: WRITE
+    reason: 终止进程会中断其未完成的工作
+    match: { exe: ["taskkill", "stop-process", "killall"], flags_any: ["/f", "-force"] }
+
+  # ==========================================================================
+  # READ_ONLY —— 只读白名单，必须带参数约束（R6：白名单 + 参数约束）
+  # flags_none 用于排除只读命令的危险变体
+  # ==========================================================================
+
+  # 只读 git 子命令（不含可写的 config/remote/branch/tag）——R6 要求白名单带约束
+  - id: readonly-git-query
+    level: READ_ONLY
+    reason: git 只读查询子命令
+    match: { exe: ["git"], sub: ["status", "log", "diff", "show", "blame", "describe", "rev-parse", "shortlog", "reflog", "ls-files", "cat-file"] }
+
+  - id: readonly-git-branch-list
+    level: READ_ONLY
+    reason: git branch 列表（排除 -d/-D 删除）为只读
+    match: { exe: ["git"], sub: ["branch"], flags_none: ["-d", "-D", "--delete", "--force", "-m", "-M"] }
+
+  - id: readonly-listing
+    level: READ_ONLY
+    reason: 列目录/查看文件内容为只读
+    match: { exe: ["ls", "dir", "get-childitem", "gci", "tree", "pwd", "cd", "where", "which", "whereis", "type", "cat", "get-content", "gc", "head", "tail", "less", "more", "nl"] }
+
+  - id: readonly-search
+    level: READ_ONLY
+    reason: 检索命令为只读
+    match: { exe: ["grep", "egrep", "fgrep", "rg", "ag", "findstr", "select-string", "sls"],
+             flags_none: ["-delete"] }
+
+  - id: readonly-find-no-delete
+    level: READ_ONLY
+    reason: find 只读查找（排除 -delete/-exec）
+    match: { exe: ["find"], flags_none: ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint"] }
+
+  - id: readonly-sed-no-inplace
+    level: READ_ONLY
+    reason: sed 只读处理（排除 -i 就地修改）
+    match: { exe: ["sed"], flags_none: ["-i"] }
+
+  - id: readonly-system-info
+    level: READ_ONLY
+    reason: 只读的系统信息查询
+    match: { exe: ["echo", "printf", "date", "whoami", "id", "uname", "hostname", "env", "set", "printenv",
+                   "ps", "tasklist", "get-process", "top", "df", "du", "free", "uptime", "wc", "file", "stat",
+                   "netstat", "ss", "lsblk", "get-command", "get-help", "test-path", "measure-object", "sort", "uniq", "cut", "tr"] }
+
+  - id: readonly-ping-dns
+    level: READ_ONLY
+    reason: 网络连通性/域名查询为只读（不外发本地数据）
+    match: { exe: ["ping", "nslookup", "dig", "host", "resolve-dnsname", "tracert", "traceroute", "ipconfig", "ifconfig", "get-netipaddress"] }
+
+  - id: readonly-tool-version
+    level: READ_ONLY
+    reason: 查询工具/项目版本与帮助为只读
+    match: { exe: ["java", "javac", "python", "python3", "node", "npm", "mvn", "mvnw", "gradle", "git", "docker", "kubectl"],
+             flags_any: ["-v", "--version", "version", "-h", "--help", "help", "-help"] }
+
+  - id: readonly-curl-head-get-only
+    level: READ_ONLY
+    reason: curl 只读取远程内容（不含上传/写本地的数据变更标志）
+    match: { exe: ["curl"], flags_none: ["--data", "--data-binary", "--data-raw", "--upload-file", "--in-file", "-o", "--output", "-O"],
+             args_any: ["http"] }
+  # 说明：curl x | sh 的「管道执行」属跨段复合模式，由 CommandPolicy 检测（DANGEROUS），
+  #      此只读规则即便命中也会被复合检测的更高档覆盖。

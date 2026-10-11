@@ -14,6 +14,8 @@ import com.cyk.manager.MemoryManager;
 import com.cyk.manager.SessionManager;
 import com.cyk.tool.ToolRegistry;
 import com.cyk.tool.SkillTool;
+import com.cyk.ui.Ui;
+import com.cyk.ui.UserInput;
 import com.cyk.util.ConsoleUi;
 import com.cyk.util.TokenUsageTracker;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -21,9 +23,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
@@ -414,17 +414,20 @@ public class Agent {
         // 使「长任务中途失败则整场对话丢失」（附录 A4）不再发生。
         registerPersistenceHook();
 
-        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
+        // P0-2 R0：复用 Ui 层的<b>全局唯一</b>输入通道，而不是再 new 一个
+        // BufferedReader(System.in)——确认闸门与本 REPL 必须共用同一个 reader，
+        // 否则 BufferedReader 的预读缓冲会把用户接下来要敲的 y/n 吞掉，
+        // 闸门永久阻塞（现象是「确认提示出来后敲什么都没反应」）。
+        UserInput userInput = Ui.userInput();
         boolean firstPrompt = true;
         try {
             while (true) {
                 // 醒目的用户提示符：分隔线 + 绿色「▶ 你:」前缀（ConsoleUi 统一渲染，
                 // 支持 ANSI 的终端显示彩色，老终端自动降级为纯符号，绝不乱码）。
-                // 首轮不打分隔线，避免与启动横幅重叠。
-                System.out.print(ConsoleUi.userPrompt(!firstPrompt));
-                System.out.flush();
+                // 首轮不打分隔线，避免与启动横幅重叠——故先取值再翻转标志。
+                String prompt = ConsoleUi.userPrompt(!firstPrompt);
                 firstPrompt = false;
-                String input = reader.readLine();
+                String input = userInput.readLine(prompt);
                 // readLine() 返回 null 表示输入流已关闭（管道输入读完、Ctrl-D/Ctrl-Z、CI 非交互调用）。
                 // 原实现在此处 continue，会导致 CPU 空转刷屏无限循环；此处必须终止会话并退出。
                 if (input == null) {
@@ -456,16 +459,16 @@ public class Agent {
             System.out.println("再见。");
             endSession(true);
 
-        } catch (IOException e) {
-            // I/O 异常属于非正常结束，标记 completed=false，便于轨迹区分成功/失败会话
+        } catch (RuntimeException e) {
+            // 非正常结束：标记 completed=false，便于轨迹区分成功/失败会话。
+            // 输入层的 IOException 已由 UserInput 实现内部吸收（返回 null 走 EOF 收尾），
+            // 这里只剩真正的意外（如轨迹/记忆组件抛错），必须落盘后再交回 picocli。
             endSession(false);
-            throw new RuntimeException(e);
+            throw e;
         } finally {
-            try {
-                reader.close();
-            } catch (IOException ignored) {
-                // 关闭失败无需处理：进程即将退出
-            }
+            // 不关闭共享 reader：确认闸门可能仍在等待输入，
+            // 且关闭 System.in 后无法恢复（见 UserInput.close() 的设计说明）
+            userInput.close();
         }
     }
 
