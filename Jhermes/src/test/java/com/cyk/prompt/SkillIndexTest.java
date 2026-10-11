@@ -144,6 +144,84 @@ class SkillIndexTest {
     }
 
     // =========================================================================
+    // 字符预算护栏（期 6 实测缺陷：只限条数时限不住长描述）
+    // =========================================================================
+
+    @Test
+    @DisplayName("描述长时自动少列：索引正文恒不超字符预算，且给出截断提示")
+    void longDescriptionsAreLimitedByCharBudgetNotJustCount() {
+        // 30 个满长描述（每条被截到 60 字）：条数上限放得过，字符预算必须拦住
+        List<Skill> verbose = new ArrayList<>();
+        IntStream.rangeClosed(1, SkillIndexBuilder.MAX_ENTRIES).forEach(i ->
+                verbose.add(skill(String.format("verbose-skill-%02d", i), "x".repeat(200), "")));
+
+        String index = SkillIndexBuilder.build(verbose);
+
+        assertThat(index.length())
+                .as("索引正文 %d 字符，预算 %d", index.length(), SkillIndexBuilder.MAX_BODY_CHARS)
+                .isLessThanOrEqualTo(SkillIndexBuilder.MAX_BODY_CHARS);
+        assertThat(index.lines().count())
+                .as("长描述下应只列出部分条目而非满 30 条")
+                .isLessThan(SkillIndexBuilder.MAX_ENTRIES);
+        assertThat(index).contains("已截断")
+                .contains("共 " + SkillIndexBuilder.MAX_ENTRIES + " 项")
+                .contains("skill_manage list");
+    }
+
+    @Test
+    @DisplayName("各种技能规模下索引都不超预算，且截断提示与实际列出的条数自洽")
+    void charBudgetHoldsAcrossSkillCounts() {
+        for (int count : List.of(1, 3, 8, 20, 30, 60)) {
+            List<Skill> skills = new ArrayList<>();
+            IntStream.rangeClosed(1, count).forEach(i ->
+                    skills.add(skill("技能-" + i, "描述内容".repeat(20), "")));
+
+            String index = SkillIndexBuilder.build(skills);
+            List<String> rows = index.lines()
+                    .filter(line -> !line.startsWith("…等共 "))
+                    .toList();
+            boolean truncated = index.contains("已截断");
+
+            assertThat(index.length())
+                    .as("%d 个技能时索引 %d 字符超预算", count, index.length())
+                    .isLessThanOrEqualTo(SkillIndexBuilder.MAX_BODY_CHARS);
+            // 至少列出首条（预算再紧也不能让索引空掉，否则技能对模型不可见）
+            assertThat(index).contains("技能-1:");
+            // 自洽：截断提示当且仅当真有未列出的条目，且总数写得对
+            if (truncated) {
+                assertThat(rows.size()).isLessThan(count);
+                assertThat(index).contains("共 " + count + " 项").contains("skill_manage list");
+            } else {
+                assertThat(rows).as("%d 个技能未截断时应全部列出", count).hasSize(count);
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("截断提示自身计入预算：卡在边界时不会因预留不当反而超线")
+    void truncationHintIsAccountedInBudget() {
+        // 构造刚好卡在预算边界的规模（短名 + 中等描述）：
+        // 若未为提示行预留空间，累加后会超 MAX_BODY_CHARS
+        for (int count : List.of(18, 20, 22, 24, 26, 28, 30)) {
+            List<Skill> skills = new ArrayList<>();
+            IntStream.rangeClosed(1, count).forEach(i ->
+                    skills.add(skill(String.format("s%02d", i), "一句用途描述信息", "")));
+
+            String index = SkillIndexBuilder.build(skills);
+
+            assertThat(index.length())
+                    .as("%d 条时索引 %d 字符超预算", count, index.length())
+                    .isLessThanOrEqualTo(SkillIndexBuilder.MAX_BODY_CHARS);
+            if (index.contains("已截断")) {
+                // 提示行存在时它自己也在预算内（而不是溢出后才补上）
+                String hint = index.lines().filter(l -> l.startsWith("…等共 ")).findFirst().orElseThrow();
+                assertThat(index.length() - hint.length()).isLessThanOrEqualTo(
+                        SkillIndexBuilder.MAX_BODY_CHARS - hint.length());
+            }
+        }
+    }
+
+    // =========================================================================
     // 装配层联动（AC6 的「新会话也可见」证据）
     // =========================================================================
 

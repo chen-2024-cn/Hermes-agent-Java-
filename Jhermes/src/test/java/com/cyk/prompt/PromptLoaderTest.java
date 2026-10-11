@@ -173,11 +173,19 @@ class PromptLoaderTest {
     void executionSegmentShouldKeepKeyRulesFromBothSources() {
         String content = byId().get("execution").content();
 
-        // 来自 TOOL_USE_ENFORCEMENT 的核心：每轮要么工具调用要么交付结果
-        assertThat(content).contains("两种之一").contains("立即").contains("不被允许");
+        // 来自 TOOL_USE_ENFORCEMENT 的核心：每轮只能是工具调用或交付结果（期 6 压缩后
+        // 措辞更紧，故断言“两种形态”的实质结构而非旧句式）
+        assertThat(content).contains("(a)").contains("(b)")
+                .contains("立刻").contains("不允许");
         // 来自 EXECUTION_DISCIPLINE 的核心：熔断、强制工具、直接执行、核验、禁猜测
         assertThat(content).contains("2 次").contains("sha256sum").contains("date")
                 .contains("禁止猜测编造").contains("明确标注").contains("核验");
+        // 六个规则块一个不少（压缩只删重复措辞，不得删规则）
+        for (String section : List.of("【立即执行，不空谈】", "【试错熔断】",
+                "【禁止凭记忆与心算作答，必须调用工具】", "【直接执行，不反复问询】",
+                "【前置检查与结果核验】")) {
+            assertThat(content).as("压缩后丢失规则块 %s", section).contains(section);
+        }
     }
 
     @Test
@@ -188,7 +196,8 @@ class PromptLoaderTest {
         // 报备测算的目标值加适度余量：超限即视为文案悄悄膨胀，期 6 预算守卫前就地拦截
         assertThat(segments.get("identity").charCount()).isLessThanOrEqualTo(200);
         assertThat(segments.get("execution").charCount())
-                .as("合并去重目标 ~900（旧两段合计 1556）").isLessThanOrEqualTo(1_050);
+                .as("期 6 按报备预案再压 30%（旧两段合计 1556 → 期2 合并 ~900 → 期6 ~700）")
+                .isLessThanOrEqualTo(750);
         assertThat(segments.get("terminal-output").charCount())
                 .as("合并目标 ~300（旧两段合计 511）").isLessThanOrEqualTo(400);
         assertThat(segments.get("web-search").charCount())

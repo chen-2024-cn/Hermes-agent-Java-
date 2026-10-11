@@ -133,8 +133,9 @@ class SystemPromptAssemblyTest {
         assertThat(prompt).contains("- skill: skill_manage");
         // 未注册的工具集不得出现在清单里
         assertThat(prompt).doesNotContain("- rag:").doesNotContain("- terminal:");
-        // R5 硬约束在场
-        assertThat(prompt).contains("只能声称并使用上述清单中真实存在的工具");
+        // R5 硬约束在场（断言稳定语义片段，不绑定完整句式，便于文案微调）
+        assertThat(prompt).contains("硬约束").contains("只能声称与使用清单内的工具")
+                .contains("严禁编造工具名");
     }
 
     @Test
