@@ -32,8 +32,9 @@ import java.util.regex.Pattern;
  * 见 {@link #knownNames}）→ 减去「显式白名单」→ 剩余即违规。</p>
  *
  * <h2>白名单：显式、逐条注释、测试封顶</h2>
- * <p>候选形态会误伤三类合法词：工具<b>参数名</b>（{@code timeout_seconds}）、
- * 工具<b>结果字段名</b>（{@code source_path}）、<b>模板变量</b>（{@code skills_index}）。
+ * <p>候选形态会误伤四类合法词：工具<b>参数名</b>（{@code timeout_seconds}）、
+ * 工具<b>结果字段名</b>（{@code source_path}）、<b>模板变量</b>（{@code skills_index}）、
+ * <b>配置键</b>（{@code disabled_toolsets}）。
  * 白名单不是「随手加一行让红灯变绿」的地方：</p>
  * <ul>
  *   <li>每条必须写明理由（{@link #NON_TOOL_NAMES} 的 value）；</li>
@@ -84,6 +85,9 @@ public final class PromptConsistencyChecker {
         // 模板变量名（skills-index.md 的 {{skills_index}}）。扫描前已剔除占位符，
         // 此处仍登记以防用户覆盖文件写出不带花括号的裸变量名造成误报
         NON_TOOL_NAMES.put("skills_index", "提示词模板变量名，非工具名");
+        // config.yaml 的配置键名（{@code /help} 的说明行会展示 tools.disabled_toolsets
+        // 告知用户能力如何被关闭）。它是配置键而非工具名，形态上却完全符合 snake_case
+        NON_TOOL_NAMES.put("disabled_toolsets", "config.yaml 的配置键名，非工具名");
     }
 
     private PromptConsistencyChecker() {
@@ -128,7 +132,7 @@ public final class PromptConsistencyChecker {
      * 前者依旧能捕获拼错的工具集名（如 {@code file_operation}），
      * 后者会把工具集名永久豁免，自检对该类漂移直接失效。</p>
      */
-    static Set<String> knownNames(CapabilityRegistry capabilities) {
+    public static Set<String> knownNames(CapabilityRegistry capabilities) {
         Set<String> known = new LinkedHashSet<>(capabilities.allToolNames());
         known.addAll(capabilities.toolsets());
         return known;

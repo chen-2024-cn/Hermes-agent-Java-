@@ -11,6 +11,9 @@ import com.cyk.http.LlmRetryPolicy;
 import com.cyk.http.LlmTransportException;
 import com.cyk.http.ModelClient;
 import com.cyk.capability.CapabilityRegistry;
+import com.cyk.command.slash.CommandOutcome;
+import com.cyk.command.slash.SlashCommandContext;
+import com.cyk.command.slash.SlashCommandRegistry;
 import com.cyk.manager.MemoryManager;
 import com.cyk.manager.SessionManager;
 import com.cyk.manager.SkillManager;
@@ -36,8 +39,14 @@ import java.util.function.Consumer;
 public class Agent {
     private static final Logger logger = LoggerFactory.getLogger(Agent.class);
 
-    /** 重发上一个失败回合的斜杠命令（P0-5 R2）。 */
-    static final String RETRY_COMMAND = "/retry";
+    /**
+     * 重发上一个失败回合的斜杠命令（P0-5 R2）。
+     *
+     * <p>命令名的<b>单一事实源</b>在 {@link SlashCommandRegistry}（P0-3 期 5）：
+     * 本常量仅作引用，供提示文案（失败后的「输入 /retry 重发」）与单测复用，
+     * 不再各写一份字面量。</p>
+     */
+    static final String RETRY_COMMAND = SlashCommandRegistry.RETRY_COMMAND;
 
     private final HermesConfig config;
     /**
@@ -65,6 +74,16 @@ public class Agent {
      * 无状态可共享：每回合调用 compose()，输入相同则输出逐字节相同（P0-4 R8 前缀稳定）。
      */
     private final PromptComposer promptComposer = new PromptComposer();
+
+    /**
+     * 斜杠命令注册表（P0-3 R4，决策 D-4）：预置 exit / {@code /retry} / {@code /help}。
+     *
+     * <p>改造前这三条逻辑散在 {@link #run()} 主循环的 {@code if} 分支里，
+     * 「当前有哪些命令」无处可查，{@code /help} 也就无从写起。
+     * 收口后主循环只剩下一个 {@code dispatch}，追加命令（P0-4 的 {@code /context}、
+     * P1-3 的 {@code /model}{@code /config}）不必再改主循环。</p>
+     */
+    private final SlashCommandRegistry slashCommands = SlashCommandRegistry.withBuiltins();
 
     /**
      * 已持久化到 session 的对话历史下标。
@@ -192,6 +211,22 @@ public class Agent {
     /** 测试用：当前会话 id（包级可见）。 */
     String sessionId() {
         return sessionId;
+    }
+
+    /**
+     * 测试专用接缝：以指定输出通道执行一条斜杠命令。
+     *
+     * <p>为何需要：命令接线在 {@link #run()} 内部，而 {@code run()} 会读 {@code System.in}
+     * 并起收尾流程，单测无法直接驱动。本接缝复用<b>与生产完全相同</b>的注册表实例、
+     * 能力快照取法与 retry 回调，仅把输出通道换成可捕获的 {@code Consumer}、
+     * 不碰输入流——因此它验证的正是「{@code /help} 的工具表与本 Agent 真实注册的工具同源」
+     * 这条接线（AC3），而不是另写一份帮助文本。</p>
+     *
+     * <p>包级可见，不进入公共 API（与 {@code clearForTest} 等既有接缝惯例一致）。</p>
+     */
+    CommandOutcome dispatchCommandForTest(String input, java.util.function.Consumer<String> output) {
+        return slashCommands.dispatch(input, new SlashCommandContext(
+                output, CapabilityRegistry.from(toolRegistry), this::retryLastTurn));
     }
 
     /**
@@ -432,6 +467,15 @@ public class Agent {
         // 否则 BufferedReader 的预读缓冲会把用户接下来要敲的 y/n 吞掉，
         // 闸门永久阻塞（现象是「确认提示出来后敲什么都没反应」）。
         UserInput userInput = Ui.userInput();
+
+        // 斜杠命令执行上下文：会话期内注册实况不变（initialize 只发生一次），
+        // 故能力快照一次定格，与本次会话的系统提示词使用同一份实况（AC3 同源）。
+        // /retry 经由本 ctx 回调 retryLastTurn，handler 不直接持有 Agent。
+        SlashCommandContext commandContext = new SlashCommandContext(
+                System.out::println,
+                CapabilityRegistry.from(toolRegistry),
+                this::retryLastTurn);
+
         boolean firstPrompt = true;
         try {
             while (true) {
@@ -452,13 +496,16 @@ public class Agent {
                 if (input.isBlank()) {
                     continue;
                 }
-                String trimmed = input.trim();
-                if (trimmed.equalsIgnoreCase("exit")) {
+                // P0-3 R4：命令解析收口——exit / /retry / /help 均由注册表处理
+                // （dispatch 内部自行 trim 与大小写归一，故直接传原始输入）。
+                // 三态返回区分「不是命令」与「命令已处理」：前者才发给模型，
+                // 后者（包括未知斜杠命令的就地提示）直接回到提示符，
+                // 不浪费一轮 token 让模型去解读 /blah 这种输入。
+                CommandOutcome outcome = slashCommands.dispatch(input, commandContext);
+                if (outcome == CommandOutcome.EXIT) {
                     break;
                 }
-                // R2：重发上一个因传输错误失败的回合（无需用户重新敲一遍问题）
-                if (trimmed.equalsIgnoreCase(RETRY_COMMAND)) {
-                    retryLastTurn();
+                if (outcome == CommandOutcome.HANDLED) {
                     continue;
                 }
 
