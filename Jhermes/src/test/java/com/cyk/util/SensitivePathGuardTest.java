@@ -131,6 +131,22 @@ class SensitivePathGuardTest {
         assertThat(SensitivePathGuard.check("grep pemfile notes.txt")).isNull();
     }
 
+    @Test
+    void shouldProtectUserPromptOverrideDirFromModelTampering() {
+        // P0-3 D-3：~/.jhermes/prompts 是提示词覆盖通道——模型改写它等价于
+        // 植入跨会话持久的提示词注入，读写均须硬拦（两种斜杠风格）
+        assertThat(SensitivePathGuard.check(
+                "echo evil > ~/.jhermes/prompts/identity.md")).isNotNull();
+        assertThat(SensitivePathGuard.check(
+                "Set-Content C:\\Users\\admin\\.jhermes\\prompts\\manifest.yaml")).isNotNull();
+        assertThat(SensitivePathGuard.checkPath(
+                Paths.get(HOME, ".jhermes", "prompts", "execution.md"))).isNotNull();
+        assertThat(SensitivePathGuard.isSensitivePath(
+                Paths.get(HOME, ".jhermes", "prompts"))).isTrue();
+        // 右边界：prompts 后紧跟字母的无关目录不误伤（.jhermes/promptscript 等）
+        assertThat(SensitivePathGuard.check("cat ~/.jhermes/promptscript/run.sh")).isNull();
+    }
+
     // =========================================================================
     // 布尔形式与字符串形式必须一致（两套 API 同源于 check）
     // =========================================================================

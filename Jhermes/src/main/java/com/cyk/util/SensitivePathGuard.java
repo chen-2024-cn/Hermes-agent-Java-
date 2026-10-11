@@ -73,7 +73,13 @@ public final class SensitivePathGuard {
         // 注意：marker 结尾不能是紧跟字母数字的位置——右边界校验会拒绝（如 "audit-" 后接 "2026"），
         // 故 logs 目录用 ".jhermes/logs"（其后必为 '/' 或结尾，能通过右边界），覆盖 audit-*.jsonl。
         ".jhermes\\security", ".jhermes/security",
-        ".jhermes\\logs", ".jhermes/logs"
+        ".jhermes\\logs", ".jhermes/logs",
+        // ---- P0-3 D-3：用户级提示词覆盖目录，读写均拦 ----
+        // ~/.jhermes/prompts 下的文件会被 PromptLoader 优先加载、直接决定此后每一轮
+        // 系统提示词的内容——模型若被诱导改写它，等价于植入跨会话持久的提示词注入
+        //（比改记忆更危险：记忆有内容扫描，提示词每轮原文注入且无扫描）。
+        // 用户的合法定制走手工编辑，模型的任何正常任务都不需要触碰该目录。
+        ".jhermes\\prompts", ".jhermes/prompts"
     );
 
     private SensitivePathGuard() {
