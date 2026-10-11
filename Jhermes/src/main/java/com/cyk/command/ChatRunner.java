@@ -80,10 +80,37 @@ public final class ChatRunner {
         System.out.println("模型: " + config.getCurrentModel());
         System.out.println("温度: " + config.getTemperature());
         System.out.println("流式: " + (config.isStreamEnabled() ? "开启" : "关闭"));
+        // P0-2 R8：--yolo / --policy=audit 开启时在 banner 下常驻醒目警示，
+        // 避免用户在遗忘自己降了防护的情况下盲目信任自动放行。
+        if (config.isYolo()) {
+            System.out.println("⚠ --yolo 已开启：写入类（WRITE）命令不再逐条确认；"
+                    + "高危（DANGEROUS）仍需键入 yes，灾难（BLOCKED）仍然拒绝。");
+        }
+        if (config.isAuditPolicyOnly()) {
+            System.out.println("⚠ --policy=audit 已开启：命令只分类记录、不打断（排查误杀用）；"
+                    + "但 BLOCKED 灾难命令仍然拒绝。");
+        }
 
         Agent agent = new Agent(config, resumeSessionId);
         agent.run();
         return 0;
+    }
+
+    /**
+     * 应用命令安全相关的 CLI-only 标志（P0-2 R8）。
+     *
+     * <p>--yolo 与 --policy=audit 都是<b>仅命令行</b>的内存覆盖，绝不写入配置文件、
+     * 绝不读环境变量（R8 硬约束）。必须在 {@link #start} 之前调用，因为 start 内部的
+     * {@code SecurityContext.init(config)} 会读取这两个值。</p>
+     *
+     * @param config     待应用的配置
+     * @param yolo       --yolo 是否传入
+     * @param policyMode --policy 的值（"audit" 启用只记录模式，其余为 enforce）
+     */
+    public static void applySecurityFlags(HermesConfig config, boolean yolo, String policyMode) {
+        boolean audit = policyMode != null && "audit".equalsIgnoreCase(policyMode.trim());
+        config.setYolo(yolo);
+        config.setAuditPolicyOnly(audit);
     }
 
     /**

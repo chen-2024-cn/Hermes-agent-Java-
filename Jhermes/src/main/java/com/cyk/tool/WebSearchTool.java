@@ -63,6 +63,9 @@ public class WebSearchTool {
             count = Math.max(1, Math.min(10, count));
         }
 
+        // P0-2 R13：回显搜索意图（与 [run #N] 同风格），便于用户观察模型的检索行为
+        com.cyk.ui.Ui.out().println(com.cyk.util.ConsoleUi.dimPrefix() + "[search] " + query);
+
         // 2. Select backend
         String serpApiKey = System.getenv("SERPAPI_KEY");
         String googleApiKey = System.getenv("GOOGLE_API_KEY");

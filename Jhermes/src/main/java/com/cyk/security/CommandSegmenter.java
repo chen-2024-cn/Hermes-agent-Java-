@@ -46,6 +46,15 @@ public final class CommandSegmenter {
     private static final Set<String> PS_SHELLS = Set.of("powershell", "pwsh", "powershell.exe", "pwsh.exe");
     private static final Set<String> UNIX_SHELLS = Set.of("bash", "sh", "zsh", "ksh", "dash", "csh");
 
+    /**
+     * 提权包装器：{@code sudo <cmd>} 后面的参数是被提权执行的真实命令。
+     *
+     * <p>不解包就会漏掉 {@code sudo rm -rf /}——外层只看到 sudo（DANGEROUS），
+     * 内层的 {@code rm -rf /}（BLOCKED）被当成普通参数忽略。解包后外层提权 + 内层删根
+     * 分别评估，取最严 → BLOCKED。</p>
+     */
+    private static final Set<String> PRIVILEGE_WRAPPERS = Set.of("sudo", "doas");
+
     /** 求值类命令：参数内容在运行期才确定，静态无法可靠分类。 */
     private static final Set<String> EVAL_LIKE = Set.of("eval", "iex", "invoke-expression", "source", ".");
 
@@ -188,6 +197,10 @@ public final class CommandSegmenter {
         }
         if (UNIX_SHELLS.contains(exe)) {
             return payloadAfterFlag(args, Set.of("-c", "-lc", "-ic"));
+        }
+        if (PRIVILEGE_WRAPPERS.contains(exe)) {
+            // sudo/doas 后面直接跟真实命令（无 -c 之类的标志），整段作为内层载荷递归
+            return String.join(" ", args);
         }
         return null;
     }

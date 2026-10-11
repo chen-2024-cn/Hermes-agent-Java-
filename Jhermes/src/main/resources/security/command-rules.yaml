@@ -228,10 +228,11 @@ rules:
 
   - id: readonly-system-info
     level: READ_ONLY
-    reason: 只读的系统信息查询
+    reason: 只读的系统信息查询（无副作用）
     match: { exe: ["echo", "printf", "date", "whoami", "id", "uname", "hostname", "env", "set", "printenv",
                    "ps", "tasklist", "get-process", "top", "df", "du", "free", "uptime", "wc", "file", "stat",
-                   "netstat", "ss", "lsblk", "get-command", "get-help", "test-path", "measure-object", "sort", "uniq", "cut", "tr"] }
+                   "netstat", "ss", "lsblk", "get-command", "get-help", "test-path", "measure-object", "sort", "uniq", "cut", "tr",
+                   "sleep", "start-sleep"] }
 
   - id: readonly-ping-dns
     level: READ_ONLY

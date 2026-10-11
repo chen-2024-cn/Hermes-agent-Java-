@@ -51,6 +51,12 @@ public class HermesConfig {
      */
     private Boolean streamOverride;
 
+    /** {@code --yolo} CLI 覆盖（仅内存，绝不写回配置文件）。 */
+    private boolean yoloOverride;
+
+    /** {@code --policy=audit} CLI 覆盖（仅内存，绝不写回配置文件）。 */
+    private boolean auditPolicyOverride;
+
     public HermesConfig(Path configPath) {
         this.configPath = configPath;
         this.config = new HashMap<>();
@@ -495,6 +501,53 @@ public class HermesConfig {
     public int getSkillScriptTimeoutSeconds() {
         return readInt("skill.script_timeout_seconds", Constants.DEFAULT_SKILL_SCRIPT_TIMEOUT_SECONDS);
     }
+
+    // =========================================================================
+    // 命令安全（JH-SPEC-001 P0-2）
+    // =========================================================================
+
+    /**
+     * {@code --yolo} 是否开启（P0-2 R8）。
+     *
+     * <p><b>仅命令行参数</b>，不写入配置文件、不读环境变量——这是 R8 的硬约束，
+     * 防止用户在 config.yaml 或 shell profile 里永久开启而不自知。
+     * 跳过 WRITE 确认，但<b>不</b>跳过 DANGEROUS 强确认、不影响 BLOCKED。</p>
+     */
+    public boolean isYolo() {
+        return yoloOverride;
+    }
+
+    /** CLI 运行期注入（{@code --yolo}）；仅内存生效。 */
+    public void setYolo(boolean yolo) {
+        this.yoloOverride = yolo;
+    }
+
+    /**
+     * {@code --policy=audit} 是否开启：只分类与记录、不拦截（P0-2 风险缓解，排查误杀）。
+     *
+     * <p><b>仅命令行参数</b>，不入配置、不读环境变量（与 --yolo 同理）。默认关闭。</p>
+     */
+    public boolean isAuditPolicyOnly() {
+        return auditPolicyOverride;
+    }
+
+    /** CLI 运行期注入（{@code --policy=audit}）；仅内存生效。 */
+    public void setAuditPolicyOnly(boolean auditOnly) {
+        this.auditPolicyOverride = auditOnly;
+    }
+
+    /** 审计开关（{@code security.audit_enabled}，缺省 true）。 */
+    public boolean isAuditEnabled() {
+        return readBoolean("security.audit_enabled", true);
+    }
+
+    /** 审计保留天数（{@code security.audit_retention_days}，缺省 30）。 */
+    public int getAuditRetentionDays() {
+        return readInt("security.audit_retention_days", DEFAULT_AUDIT_RETENTION_DAYS);
+    }
+
+    /** 审计保留天数缺省值（与 {@link com.cyk.security.AuditLogger#DEFAULT_RETENTION_DAYS} 一致）。 */
+    public static final int DEFAULT_AUDIT_RETENTION_DAYS = 30;
 
     // =========================================================================
     // 底层读取：类型安全的取值 + 数值强转

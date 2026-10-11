@@ -32,6 +32,14 @@ public class  ResumeCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"-l", "--last"}, description = "恢复最近一次会话（等价于不带参数）")
     private boolean last;
 
+    /** P0-2 R8：跳过 WRITE 确认；仅命令行。 */
+    @CommandLine.Option(names = {"--yolo"}, description = "跳过写入类命令确认（高危/灾难命令仍需确认或拦截）")
+    private boolean yolo;
+
+    /** P0-2：--policy=audit 只记录不拦截（排查误杀）。 */
+    @CommandLine.Option(names = {"--policy"}, description = "命令策略模式：audit=只记录不拦截（排查误杀）；缺省 enforce")
+    private String policyMode;
+
     @CommandLine.Parameters(index = "0", arity = "0..1",
             description = "要恢复的会话ID（来自 `Jhermes sessions`）；省略则恢复最近一次会话")
     private String sessionId;
@@ -61,6 +69,7 @@ public class  ResumeCommand implements Callable<Integer> {
 
             System.out.println("恢复会话：" + target);
             HermesConfig config = HermesConfig.load();
+            ChatRunner.applySecurityFlags(config, yolo, policyMode);
             // resume 复用 chat 的启动逻辑，仅多传一个待恢复的 sessionId
             return ChatRunner.start(config, model, temperature, ChatRunner.resolveStream(stream, noStream), target);
         } catch (Exception e) {

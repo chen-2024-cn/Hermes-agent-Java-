@@ -145,6 +145,10 @@ public class Agent {
                 ? resumeSessionId
                 : "cli" + UUID.randomUUID().toString().substring(0, 8);
 
+        // P0-2 R10：把真实会话 id 交给安全上下文，使审计记录的 session_id 正确。
+        // （initializeTool 触发 SecurityContext.init 时 sessionId 尚未赋值，此处补齐）
+        com.cyk.security.SecurityContext.setSessionId(this.sessionId);
+
         // R6：会话消息上限可配（缺省 100，与改造前一致），由 SessionManager 注入到每个 Session
         this.sessionManager = sessionManager;
 

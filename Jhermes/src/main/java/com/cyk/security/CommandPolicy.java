@@ -86,6 +86,11 @@ public class CommandPolicy {
         return auditOnly;
     }
 
+    /** @return 当前规则集的规则条数（供 security check 自检展示）。 */
+    public int ruleCount() {
+        return ruleSet.size();
+    }
+
     /**
      * 对一条命令做完整分级评估。
      *
@@ -207,9 +212,13 @@ public class CommandPolicy {
     }
 
     /**
-     * 递归删除灾难目标判定：delete 命令 + （递归/强制标志 或 灾难目标）→ BLOCKED。
+     * 递归删除灾难目标判定。
      *
-     * @return BLOCKED/命中级别；不适用返回 null
+     * <p>只有「递归/强制标志」+「灾难目标」同时成立才 BLOCKED。单个绝对文件的删除
+     * （如 {@code rm C:\Users\admin\drop_kb.sql}，无 r/f）<b>不</b>硬拦——它是文件管理日常操作，
+     * 改由越界升档到 DANGEROUS 走强确认（与改造前正则「必须带 rf flag」的语义一致，避免误杀）。</p>
+     *
+     * @return BLOCKED（递归删灾难目标）/ WRITE（递归删工作区内）/ null（不适用或非递归）
      */
     private CommandLevel destructiveDeleteLevel(CommandSegment seg) {
         if (!DELETE_EXES.contains(seg.executable())) {
@@ -217,14 +226,17 @@ public class CommandPolicy {
         }
         boolean recursiveForce = seg.flags().stream()
                 .anyMatch(f -> RECURSIVE_FORCE_FLAGS.contains(f.toLowerCase(Locale.ROOT)));
+        if (!recursiveForce) {
+            // 非递归删除：交给普通分类 + 越界升档处理（绝对路径会升为 DANGEROUS）
+            return null;
+        }
         for (String target : seg.pathCandidates()) {
             if (WorkspacePathAnalyzer.isCatastrophicDeleteTarget(target)) {
-                // 只要目标是灾难位置就 BLOCKED（无论是否带 r/f，删绝对根位置本身就是灾难）
                 return CommandLevel.BLOCKED;
             }
         }
-        // 带递归/强制但目标在工作区内 → 不是灾难，交给普通分类（通常 WRITE + 确认）
-        return recursiveForce ? CommandLevel.WRITE : null;
+        // 递归删除但目标在工作区内 → WRITE（确认后执行，不硬拦）
+        return CommandLevel.WRITE;
     }
 
     /** 段的任一路径参数是否越出工作区（R9）。 */
@@ -267,6 +279,20 @@ public class CommandPolicy {
             }
         }
 
+        // 管道进「裸解释器」（解释器段没有脚本文件参数、也没有 -c）= 从 stdin 读代码执行，
+        // 例如 `echo 'rm -rf /' | bash`、`curl x | sh`——任意代码执行。
+        // 分段器把引号内容当数据是对的（避免误杀 grep "rm -rf /"），但“把数据喂给 shell 执行”
+        // 是另一回事，必须在整命令级识别。
+        for (CommandSegment seg : segments) {
+            if (SHELL_INTERPRETERS.contains(seg.executable()) && !hasScriptArgument(seg)) {
+                matchedIds.add("dangerous-pipe-to-shell");
+                // 管道内容里若含灾难删除片段，硬拦 BLOCKED（echo 'rm -rf /' | bash 真会删根）；
+                // 否则 DANGEROUS（curl 远程脚本 | sh 等下载执行）
+                return containsCatastrophicFragment(lower)
+                        ? CommandLevel.BLOCKED : CommandLevel.DANGEROUS;
+            }
+        }
+
         // 下载管道给 shell / 解释器：网络抓取 + shell 解释器同时出现在同一命令中
         boolean hasFetch = false;
         boolean hasShell = false;
@@ -284,6 +310,55 @@ public class CommandPolicy {
             return CommandLevel.DANGEROUS;
         }
         return null;
+    }
+
+    /**
+     * 解释器段是否带「脚本参数」——带脚本文件或以 {@code -c} 内联代码，都不是纯 stdin 执行。
+     *
+     * <p>纯 stdin 执行（如 {@code | bash} 后面什么都没有）才是最危险的形态：它把管道上游的
+     * 任意输出当代码跑。带脚本文件的（{@code | python analyze.py}）是正常用法，
+     * 不误判为「管道执行任意代码」，避免 AC3 误杀。</p>
+     */
+    private static boolean hasScriptArgument(CommandSegment seg) {
+        for (String flag : seg.flags()) {
+            if ("-c".equals(flag) || "-lc".equals(flag) || "-ic".equals(flag)
+                    || "-command".equals(flag) || "-encodedcommand".equals(flag)) {
+                return true;
+            }
+        }
+        for (String arg : seg.args()) {
+            if (!isFlagToken(arg)) {
+                return true;// 存在位置参数（脚本文件名等），非纯 stdin 执行
+            }
+        }
+        return false;
+    }
+
+    /** 是否为标志 token（{@code -x}/{@code --x}/{@code /x}），复用分段器的判据。 */
+    private static boolean isFlagToken(String token) {
+        return token != null && !token.isEmpty() && (token.startsWith("-")
+                || (token.startsWith("/") && token.length() <= 3
+                    && token.chars().skip(1).allMatch(Character::isLetter)));
+    }
+
+    /**
+     * 原命令是否含「灾难删除/破坏」高信号片段。
+     *
+     * <p>仅在已判定为「管道进裸解释器」时作为升 BLOCKED 的依据——此时命令本就要把内容当代码执行，
+     * 用子串匹配是合理兜底（不构成对普通命令的误杀，普通命令走结构化规则匹配）。</p>
+     */
+    private static boolean containsCatastrophicFragment(String lower) {
+        String[] catastrophic = {
+                "rm -rf /", "rm -fr /", "rm -rf ~", "rm -fr ~", "rm -rf .", "rm -rf *",
+                "del /s", "rd /s", "rmdir /s", "remove-item -recurse", "format c:", "mkfs",
+                "diskpart", ":(){", "shutdown", "stop-computer", "dd if=", "of=/dev/"
+        };
+        for (String frag : catastrophic) {
+            if (lower.contains(frag)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

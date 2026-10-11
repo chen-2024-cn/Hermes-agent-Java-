@@ -109,7 +109,7 @@ public class SkillTool {
                         .name(toolName)
                         .toolset("skill")
                         .schema(schema)
-                        .handler(createScriptHandler(skill.getDirectory(), td))
+                        .handler(createScriptHandler(skill.getDirectory(), td, toolName))
                         .emoji("🔧")
                         .build());
 
@@ -131,10 +131,12 @@ public class SkillTool {
      *   <li><b>未关闭子进程 stdin</b> → 立即关闭，需要交互输入的脚本快速失败而非永久挂起。</li>
      * </ol>
      *
-     * <p>命令安全门禁（经 {@code CommandPolicy} 按 WRITE 确认、脚本哈希变更失效）属
-     * <b>P0-2 R14</b> 范围，本方法不提前引入，避免两个需求相互阻塞。</p>
+     * <p><b>P0-2 R14</b>：拉起任何外部进程的路径都统一经命令安全门禁。技能脚本按 WRITE
+     * 处理，过确认闸门；「本会话同类放行（a）」的归组键<b>含脚本内容 SHA-256</b>，
+     * 脚本一旦被改写哈希即变、放行自动失效——防止「先放行干净脚本，再篡改成恶意脚本」。</p>
      */
-    private static Function<Map<String, Object>, String> createScriptHandler(Path skillDir, ToolDefinition td) {
+    private static Function<Map<String, Object>, String> createScriptHandler(Path skillDir, ToolDefinition td,
+                                                                             String toolName) {
         return args -> {
             Path script = skillDir.resolve(td.getHandler()).normalize();
 
@@ -146,6 +148,12 @@ public class SkillTool {
                 return ToolRegistry.toolError("Script not found: " + td.getHandler());
             }
 
+            // R14 门禁：技能脚本按 WRITE 确认（审计模式跳过），拒绝则不执行
+            String denial = gateSkillScript(script, toolName);
+            if (denial != null) {
+                return denial;
+            }
+
             List<String> command = new ArrayList<>();
             command.add(script.toString());
             for (var entry : args.entrySet()) {
@@ -155,6 +163,92 @@ public class SkillTool {
 
             return runScriptWithTimeout(command, skillDir, td.getHandler(), scriptTimeoutSeconds);
         };
+    }
+
+    /**
+     * 技能脚本执行的命令门禁（R14）：构造 WRITE 档决策，过确认闸门并审计。
+     *
+     * <p>归组键 {@code skill|<工具名>|<脚本SHA-256>} 使「本会话同类放行」绑定到脚本内容；
+     * 脚本被篡改后哈希变化，此前的放行不再生效。</p>
+     *
+     * @param script   脚本文件路径
+     * @param toolName 技能工具名（形如 {@code <技能名>__<工具名>}）
+     * @return null 表示放行；非 null 为拒绝时返回给模型的 error JSON
+     */
+    private static String gateSkillScript(Path script, String toolName) {
+        String hash = sha256(script);
+        String shortHash = hash.length() >= 12 ? hash.substring(0, 12) : hash;
+        String groupKey = "skill|" + toolName + "|" + hash;
+
+        var decision = new com.cyk.security.PolicyDecision(
+                com.cyk.security.CommandLevel.WRITE,
+                List.of("skill-script"),
+                "技能脚本执行（脚本改动后需重新确认）：" + toolName,
+                List.of(),
+                toolName + "  [脚本 sha256:" + shortHash + "...]",
+                groupKey, false);
+
+        com.cyk.security.AuditLogger auditLogger = com.cyk.security.SecurityContext.auditLogger();
+
+        // 审计模式：只分类记录、不打断（与终端命令一致）
+        if (com.cyk.security.SecurityContext.isAuditOnly()) {
+            recordSkillAudit(auditLogger, toolName, hash, decision,
+                    com.cyk.security.AuditLogger.Decision.ALLOWED, "audit-mode");
+            return null;
+        }
+
+        var approval = com.cyk.security.SecurityContext.confirmation().request(decision);
+        if (approval != com.cyk.security.ConfirmationProvider.Approval.ALLOW) {
+            boolean interactive = com.cyk.ui.Ui.userInput().isInteractive();
+            recordSkillAudit(auditLogger, toolName, hash, decision,
+                    interactive ? com.cyk.security.AuditLogger.Decision.REJECTED_BY_USER
+                            : com.cyk.security.AuditLogger.Decision.REJECTED_NONINTERACTIVE, "denied");
+            return ToolRegistry.toolError("用户拒绝执行技能脚本 " + toolName + "（sha256:" + shortHash + "...）。"
+                    + (interactive ? "请告知用户脚本用途，如需执行由其确认。"
+                    : "当前非交互模式，需确认的技能脚本一律拒绝。"));
+        }
+        recordSkillAudit(auditLogger, toolName, hash, decision,
+                com.cyk.security.AuditLogger.Decision.CONFIRMED, "confirmed");
+        return null;
+    }
+
+    /** 写技能脚本审计记录（null 安全）。 */
+    private static void recordSkillAudit(com.cyk.security.AuditLogger auditLogger, String toolName,
+                                         String scriptHash, com.cyk.security.PolicyDecision decision,
+                                         com.cyk.security.AuditLogger.Decision kind, String approval) {
+        if (auditLogger == null) {
+            return;
+        }
+        auditLogger.record(new com.cyk.security.AuditLogger.AuditRecord(
+                "skill-script:" + toolName,
+                List.of("sha256:" + scriptHash),
+                com.cyk.security.CommandLevel.WRITE,
+                List.of("skill-script"), kind, approval, null, null,
+                System.getProperty("user.dir")));
+    }
+
+    /**
+     * 计算脚本内容的 SHA-256（十六进制）。「同类放行」随脚本内容变化而失效的关键。
+     *
+     * <p>读取失败时回退「大小:修改时间」——仍是内容变化的稳定指纹，绝不因哈希失败而放行。</p>
+     */
+    static String sha256(Path file) {
+        try {
+            byte[] bytes = Files.readAllBytes(file);
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+            StringBuilder hex = new StringBuilder();
+            for (byte b : digest) {
+                hex.append(String.format("%02x", b));
+            }
+            return hex.toString();
+        } catch (Exception e) {
+            try {
+                var attrs = Files.readAttributes(file, java.nio.file.attribute.BasicFileAttributes.class);
+                return "unavailable-" + attrs.size() + "-" + attrs.lastModifiedTime().toMillis();
+            } catch (Exception ignore) {
+                return "unavailable-unknown";
+            }
+        }
     }
 
     /**

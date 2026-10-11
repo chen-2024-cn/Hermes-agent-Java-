@@ -52,11 +52,28 @@ public final class SensitivePathGuard {
         "id_rsa", "id_ed25519",
         ".npmrc",                      // npm 可能含 _authToken
         ".pypirc",
+        // ---- P0-2 R11 扩充：环境变量密钥与私钥/证书材料 ----
+        // 右边界校验保证 ".env"/".pem"/".key" 只在文件扩展名或目录名处命中，
+        // 不误伤 ".keystore"（.key 后跟字母 s → 不命中，故单独列出）、"monkeys" 等普通词。
+        ".env",                        // .env / .env.production / .env.local 环境变量密钥
+        ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".p7b",   // 私钥与密钥库
+        // ---- 云厂商凭据 ----
+        ".azure",                      // ~/.azure（Azure CLI accessTokens.json / azureProfile.json）
+        ".config\\gcloud", ".config/gcloud",   // gcloud ADC 凭据目录
+        "application_default_credentials.json", // Google Application Default Credentials
+        ".alicloud",                   // 阿里云 CLI 凭据
+        ".tencentcloud",               // 腾讯云 CLI 凭据
         // Jhermes 数据目录里的 config.yaml 含模型 api_key 与 PG 口令，读取即等于泄密。
         // 新旧目录名必须同时拦截：Constants.migrateLegacyData 迁移失败/两目录并存时，
         // 凭据仍在旧的 .skhermes 下，只拦新名会留下真实可利用的泄露口子。
         ".jhermes\\config.yaml", ".jhermes/config.yaml",
-        ".skhermes\\config.yaml", ".skhermes/config.yaml"
+        ".skhermes\\config.yaml", ".skhermes/config.yaml",
+        // ---- P0-2 R11：自我保护——策略文件目录与审计/日志目录，读写均拦 ----
+        // 防止模型改写自己的命令规则给自己开权限，或篡改/删除审计留痕。
+        // 注意：marker 结尾不能是紧跟字母数字的位置——右边界校验会拒绝（如 "audit-" 后接 "2026"），
+        // 故 logs 目录用 ".jhermes/logs"（其后必为 '/' 或结尾，能通过右边界），覆盖 audit-*.jsonl。
+        ".jhermes\\security", ".jhermes/security",
+        ".jhermes\\logs", ".jhermes/logs"
     );
 
     private SensitivePathGuard() {

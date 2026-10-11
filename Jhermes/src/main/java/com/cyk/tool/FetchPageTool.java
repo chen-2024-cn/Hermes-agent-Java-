@@ -70,6 +70,9 @@ public class FetchPageTool {
             return ToolRegistry.toolError("无效的 URL: " + urlStr + " (必须以 http:// 或 https:// 开头)");
         }
 
+        // P0-2 R13：回显抓取目标（与 [run #N] 同风格），便于用户及时发现外泄/误访问企图
+        com.cyk.ui.Ui.out().println(com.cyk.util.ConsoleUi.dimPrefix() + "[fetch] " + urlStr);
+
         // Engine 1: Jsoup (fast, server-rendered pages)
         String jsoupResult = fetchWithJsoup(urlStr);
         String jsoupText = extractTextField(jsoupResult);

@@ -1,5 +1,6 @@
 package com.cyk;
 
+import com.cyk.command.AuditCommand;
 import com.cyk.command.ChatCommand;
 import com.cyk.command.ChatRunner;
 import com.cyk.command.ResumeCommand;
@@ -19,7 +20,9 @@ import java.util.concurrent.Callable;
         subcommands = {
                 ChatCommand.class,
                 SessionsCommand.class,
-                ResumeCommand.class
+                ResumeCommand.class,
+                AuditCommand.class,
+                com.cyk.command.SecurityCommand.class
         })
 public class HermesAgent implements Callable<Integer> {
 
@@ -60,6 +63,17 @@ public class HermesAgent implements Callable<Integer> {
     @CommandLine.Option(names = {"--no-stream"}, description = "禁用流式输出")
     private boolean noStream;
 
+    /**
+     * P0-2 R8：跳过 WRITE 类命令确认。<b>仅命令行参数</b>，不写配置、不读环境变量；
+     * 不跳过 DANGEROUS 强确认、不影响 BLOCKED 硬拦。
+     */
+    @CommandLine.Option(names = {"--yolo"}, description = "跳过写入类命令确认（高危/灾难命令仍需确认或拦截）")
+    private boolean yolo;
+
+    /** P0-2 风险缓解：{@code --policy=audit} 只分类记录不拦截（排查误杀）；同样仅本次运行有效。 */
+    @CommandLine.Option(names = {"--policy"}, description = "命令策略模式：audit=只记录不拦截（排查误杀）；缺省 enforce")
+    private String policyMode;
+
     public String getConfigPath() {
         return configPath;
     }
@@ -70,6 +84,7 @@ public class HermesAgent implements Callable<Integer> {
         // 查看用法请用 `Jhermes --help`（由 mixinStandardHelpOptions 提供），不再依赖根命令打印帮助。
 
         HermesConfig config = HermesConfig.load();
+        ChatRunner.applySecurityFlags(config, yolo, policyMode);
         return ChatRunner.start(config, model, temperature,
                 ChatRunner.resolveStream(stream, noStream), null);
     }

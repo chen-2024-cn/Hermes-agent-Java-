@@ -1,6 +1,14 @@
 package com.cyk.tool;
 
 import com.cyk.bean.ToolEntry;
+import com.cyk.constant.Constants;
+import com.cyk.security.CommandLevel;
+import com.cyk.security.ConfirmationProvider;
+import com.cyk.security.PolicyDecision;
+import com.cyk.security.SecurityContext;
+import com.cyk.security.WorkspacePathAnalyzer;
+import com.cyk.ui.Ui;
+import com.cyk.util.ConsoleUi;
 import com.cyk.util.SensitivePathGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -176,6 +184,26 @@ public class FileTool {
             if (Files.isDirectory(path)) {
                 return ToolRegistry.toolError("路径是目录而非文件，请指定完整文件路径（例如 D:\\English\\data.txt）");
             }
+
+            //第二步之二：写入确认门（P0-2 R9/R15）
+            //  R15：写入技能目录需确认——防模型落地脚本后于下次启动被注册为工具
+            //  R9：写入越出启动工作区需确认（尽力检测，非隔离）
+            //  工作区内的普通写入不打扰用户（write_file 是核心能力，逐次确认会不可用）
+            Path skillsDir = Constants.getHermesHome().resolve("skills");
+            boolean toSkills = path.startsWith(skillsDir);
+            boolean outsideWorkspace = WorkspacePathAnalyzer.escapesWorkspace(
+                    pathStr, Paths.get(System.getProperty("user.dir")));
+            if (toSkills || outsideWorkspace) {
+                String why = toSkills ? "写入技能目录（下次启动会被注册为工具）" : "写入启动工作区之外的目录";
+                String denial = confirmWriteGate(path, why);
+                if (denial != null) {
+                    return denial;
+                }
+            }
+
+            //第二步之三：回显写入目标（P0-2 R13，与 [run #N] 同风格，便于用户发现异常写入）
+            Ui.out().println(ConsoleUi.dimPrefix() + "[write] " + path);
+
             Path parent = path.getParent();
             if (parent != null) Files.createDirectories(parent);
 
@@ -194,6 +222,35 @@ public class FileTool {
         } catch (Exception e) {
             return ToolRegistry.toolError("Write failed: " + e.getMessage());
         }
+    }
+
+    /**
+     * 文件写入的确认门（R9/R15）：构造 WRITE 档决策，过确认闸门。
+     *
+     * <p>审计模式（{@code --policy=audit}）下不打断；{@code --yolo} 对 WRITE 生效同样跳过。
+     * 拒绝时返回给模型的 error JSON，不实际写盘。</p>
+     *
+     * @return null 表示放行；非 null 为拒绝时返回的错误结果
+     */
+    private static String confirmWriteGate(Path path, String why) {
+        PolicyDecision decision = new PolicyDecision(
+                CommandLevel.WRITE, List.of("file-write-boundary"), why,
+                List.of(), "write_file " + path,
+                "write_file|null|" + why, false);
+        if (SecurityContext.isAuditOnly()) {
+            Ui.out().println(ConsoleUi.dimPrefix() + "[审计模式] 写入不拦截：" + why + " → " + path);
+            return null;
+        }
+        if (SecurityContext.isYolo()) {
+            return null;// --yolo 跳过 WRITE 确认（不跳 DANGEROUS，但文件写入按 WRITE 处理）
+        }
+        ConfirmationProvider.Approval approval = SecurityContext.confirmation().request(decision);
+        if (approval != ConfirmationProvider.Approval.ALLOW) {
+            logger.warn("用户拒绝写入: {} （{}）", path, why);
+            return ToolRegistry.toolError("用户拒绝写入文件：" + why + "（" + path + "）。"
+                    + "请告知用户写入意图与位置，如确需写入由其确认。");
+        }
+        return null;
     }
 
     /**

@@ -83,6 +83,55 @@ class SensitivePathGuardTest {
     }
 
     // =========================================================================
+    // P0-2 R11 新增标记：环境变量密钥 / 私钥证书 / 云凭据 / 自我保护目录
+    // =========================================================================
+
+    @Test
+    void shouldDetectEnvFilesAndKeyMaterial() {
+        // .env 系列（右边界校验：.env 后跟 '/' 或结尾命中，".environment" 不误伤）
+        assertThat(SensitivePathGuard.check("Get-Content .env")).isNotNull();
+        assertThat(SensitivePathGuard.check("cat .env.production")).isNotNull();
+        assertThat(SensitivePathGuard.check("cat config/.env.local")).isNotNull();
+        // 私钥与密钥库材料
+        assertThat(SensitivePathGuard.check("Get-Content server.pem")).isNotNull();
+        assertThat(SensitivePathGuard.check("type tls.key")).isNotNull();
+        assertThat(SensitivePathGuard.check("keytool -list -keystore app.jks")).isNotNull();
+        assertThat(SensitivePathGuard.check("cat cert.p12")).isNotNull();
+    }
+
+    @Test
+    void shouldDetectCloudVendorCredentialDirs() {
+        assertThat(SensitivePathGuard.check("cat ~/.azure/accessTokens.json")).isNotNull();
+        assertThat(SensitivePathGuard.check("cat ~/.config/gcloud/credentials.db")).isNotNull();
+        assertThat(SensitivePathGuard.check(
+                "type $env:APPDATA\\gcloud\\application_default_credentials.json")).isNotNull();
+    }
+
+    @Test
+    void shouldProtectPolicyAndAuditDirsFromModelTampering() {
+        // R11：模型不得读写自己的命令规则文件，也不得篡改/删除审计留痕
+        assertThat(SensitivePathGuard.check(
+                "echo evil > ~/.jhermes/security/rules.yaml")).isNotNull();
+        assertThat(SensitivePathGuard.check(
+                "Get-Content ~/.jhermes/security/rules.yaml")).isNotNull();
+        assertThat(SensitivePathGuard.check(
+                "Remove-Item ~/.jhermes/logs/audit-2026-10-09.jsonl")).isNotNull();
+        assertThat(SensitivePathGuard.checkPath(
+                Paths.get(HOME, ".jhermes", "security", "rules.yaml"))).isNotNull();
+        assertThat(SensitivePathGuard.isSensitivePath(
+                Paths.get(HOME, ".jhermes", "logs"))).isTrue();
+    }
+
+    @Test
+    void r11MarkersShouldNotFlagLookalikes() {
+        // 右边界校验：普通词不得因含 .env/.pem/.key 子串而误伤
+        assertThat(SensitivePathGuard.check("cat environment.txt")).isNull();
+        assertThat(SensitivePathGuard.check("echo monkey.jpg")).isNull();
+        assertThat(SensitivePathGuard.check("cat .keys.json")).isNull();// .key 后跟 s → 不命中
+        assertThat(SensitivePathGuard.check("grep pemfile notes.txt")).isNull();
+    }
+
+    // =========================================================================
     // 布尔形式与字符串形式必须一致（两套 API 同源于 check）
     // =========================================================================
 

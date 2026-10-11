@@ -335,6 +335,10 @@ public class ToolRegistry {
      * @param config 已加载的配置（RAG 懒加载判断依赖 rag.enabled 等字段）
      */
     public static void initialize(com.cyk.config.HermesConfig config) {
+        // 命令安全上下文初始化（P0-2）：构建策略、确认闸门、审计器。
+        // 无论 terminal_enabled 与否都要初始化——SkillTool 的技能脚本执行同样经 CommandPolicy（R14）。
+        com.cyk.security.SecurityContext.init(config);
+
         FileTool.register(instance);
         MemoryTool.register(instance);
         // SkillTool 需要配置：技能脚本执行超时（P0-5 R10）由 skill.script_timeout_seconds 控制

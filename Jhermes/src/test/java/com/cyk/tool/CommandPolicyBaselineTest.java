@@ -45,16 +45,26 @@ class CommandPolicyBaselineTest {
     }
 
     /**
-     * 复刻 TerminalTool.runCommand 的实际检查次序：先灾难正则、后敏感路径。
+     * 复刻 P0-2 之前的旧引擎分类：先用旧 6 条灾难正则（{@link TerminalTool#legacyCheckDangerous}），
+     * 再用敏感路径守卫。这是 B7 基线的真实口径，用于计算「旧引擎拦截集」。
      */
     private static Baseline classify(String command) {
-        if (TerminalTool.checkDangerous(command) != null) {
+        if (TerminalTool.legacyCheckDangerous(command) != null) {
             return Baseline.BLOCKED_DANGER;
         }
         if (TerminalTool.checkSensitive(command) != null) {
             return Baseline.BLOCKED_SENSITIVE;
         }
         return Baseline.PASSED;
+    }
+
+    /**
+     * 新引擎（P0-2 {@code CommandPolicy}）是否硬拦截：
+     * {@link TerminalTool#checkDangerous} 现委托策略返回 BLOCKED 判定，敏感路径守卫不变。
+     */
+    private static boolean newEngineBlocks(String command) {
+        return TerminalTool.checkDangerous(command) != null
+                || TerminalTool.checkSensitive(command) != null;
     }
 
     /**
@@ -153,10 +163,10 @@ class CommandPolicyBaselineTest {
             // ========== 敏感路径（6 条） ==========
             new Case("B65", "敏感路径", "cat ~/.ssh/id_rsa", Baseline.BLOCKED_SENSITIVE, "BLOCKED"),
             new Case("B66", "敏感路径", "type .aws\\credentials", Baseline.BLOCKED_SENSITIVE, "BLOCKED"),
-            new Case("B67", "敏感路径", "Get-Content .env", Baseline.PASSED, "BLOCKED(P0-2 R11新增)"),
-            new Case("B68", "敏感路径", "Get-Content server.pem", Baseline.PASSED, "BLOCKED(P0-2 R11新增)"),
-            new Case("B69", "敏感路径", "echo evil > ~/.jhermes/security/rules.yaml", Baseline.PASSED, "BLOCKED(P0-2 R11新增)"),
-            new Case("B70", "敏感路径", "Get-Content ~/.jhermes/logs/audit-2026-10-09.jsonl", Baseline.PASSED, "BLOCKED(P0-2 R11新增)"),
+            new Case("B67", "敏感路径", "Get-Content .env", Baseline.BLOCKED_SENSITIVE, "BLOCKED(P0-2 R11新增)"),
+            new Case("B68", "敏感路径", "Get-Content server.pem", Baseline.BLOCKED_SENSITIVE, "BLOCKED(P0-2 R11新增)"),
+            new Case("B69", "敏感路径", "echo evil > ~/.jhermes/security/rules.yaml", Baseline.BLOCKED_SENSITIVE, "BLOCKED(P0-2 R11新增)"),
+            new Case("B70", "敏感路径", "Get-Content ~/.jhermes/logs/audit-2026-10-09.jsonl", Baseline.BLOCKED_SENSITIVE, "BLOCKED(P0-2 R11新增)"),
 
             // ========== 误杀防护（12 条；B74/B75 当前被误拦，P0-2 修复后应放行） ==========
             new Case("B71", "误杀防护", "rm -rf ./target", Baseline.PASSED, "WRITE(工作区内确认)"),
@@ -177,10 +187,40 @@ class CommandPolicyBaselineTest {
     @ParameterizedTest(name = "{index} [{0}]")
     @MethodSource("cases")
     void baselineMatrixMustNotDrift(Case c) {
-        // 钉死当前行为：任何 P0-2 改动若使既拦命令漏过（BLOCKED_*→PASSED），本测试立刻红
+        // 元检查：旧引擎（legacy 6 条正则 + 敏感守卫）对每条命令的分类仍与 B7 记录一致
+        // ——证明我保留的 legacyCheckDangerous 确实复刻了改造前行为，AC2 的对照基准可信
         assertThat(classify(c.command()))
-                .as("用例 %s（%s）当前基线分类漂移: %s", c.id(), c.category(), c.command())
+                .as("用例 %s（%s）旧引擎基线漂移: %s", c.id(), c.category(), c.command())
                 .isEqualTo(c.expected());
+    }
+
+    /** 已知误杀用例：旧引擎硬拦了正常命令（引号内是数据），P0-2 分段器修复后应不再硬拦（AC3）。 */
+    private static final java.util.Set<String> KNOWN_FALSE_POSITIVES = java.util.Set.of("B74", "B75");
+
+    /**
+     * AC2 回归保障：旧引擎（legacyCheckDangerous / checkSensitive）已拦截的命令，
+     * 新引擎（CommandPolicy）必须仍然拦截，绝不放宽。
+     *
+     * <p>例外：B74/B75 是旧引擎的<b>误杀</b>（引号内含危险字样的 grep/echo），
+     * 新引擎把它们放行是<b>修复</b>而非放宽，单独断言其不再被硬拦（AC3）。</p>
+     */
+    @ParameterizedTest(name = "{index} AC2 [{0}]")
+    @MethodSource("cases")
+    void ac2PreviouslyBlockedMustStayBlocked(Case c) {
+        boolean oldBlocked = c.expected() != Baseline.PASSED;
+        if (!oldBlocked) {
+            // 旧引擎漏过的 44 条：新引擎的确切级别由 CommandPolicyMatrixTest 精确断言，此处不重复
+            return;
+        }
+        if (KNOWN_FALSE_POSITIVES.contains(c.id())) {
+            assertThat(newEngineBlocks(c.command()))
+                    .as("误杀修复 %s：'%s' 引号内是数据，不应再被硬拦", c.id(), c.command())
+                    .isFalse();
+        } else {
+            assertThat(newEngineBlocks(c.command()))
+                    .as("AC2 回归 %s：旧引擎已硬拦的 '%s'，新引擎不得放行", c.id(), c.command())
+                    .isTrue();
+        }
     }
 
     /**

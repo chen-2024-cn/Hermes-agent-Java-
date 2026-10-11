@@ -36,6 +36,14 @@ public class ChatCommand implements Callable<Integer> {
     @CommandLine.Option(names = {"--no-stream"}, description = "禁用流式输出")
     private boolean noStream;
 
+    /** P0-2 R8：跳过 WRITE 确认；仅命令行、不写配置、不读环境变量。 */
+    @CommandLine.Option(names = {"--yolo"}, description = "跳过写入类命令确认（高危/灾难命令仍需确认或拦截）")
+    private boolean yolo;
+
+    /** P0-2：--policy=audit 只记录不拦截（排查误杀）。 */
+    @CommandLine.Option(names = {"--policy"}, description = "命令策略模式：audit=只记录不拦截（排查误杀）；缺省 enforce")
+    private String policyMode;
+
     @Override
     public Integer call() throws Exception {
         try {
@@ -48,6 +56,7 @@ public class ChatCommand implements Callable<Integer> {
             }
 
             HermesConfig config = HermesConfig.load();
+            ChatRunner.applySecurityFlags(config, yolo, policyMode);
             // chat 命令启动新会话（resumeSessionId 传 null）
             return ChatRunner.start(config, model, temperature, ChatRunner.resolveStream(stream, noStream), null);
         } catch (Exception e) {
