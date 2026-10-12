@@ -1,0 +1,40 @@
+=== CASE 1 : 读取当前目录下的 pom.xml，只回答 artifactId 与 version 两个值，用一行给出，不要解释过程 ===
+ANSWER>>> artifactId: Jhermes  version: 2.1.0
+<<<END
+TOKENS: 本轮 输入 15,179 / 输出 61 / 总计 15,240 tokens
+
+=== CASE 2 : 在 src 目录下搜索文件名包含 Command 的 java 文件，只列出文件名（每行一个），不要解释 ===
+ANSWER>>> AuditCommand.java
+ChatCommand.java
+ResumeCommand.java
+SecurityCheckCommand.java
+SecurityCommand.java
+SessionsCommand.java
+CommandLevel.java
+CommandPolicy.java
+CommandRule.java
+CommandSegment.java
+CommandSegmenter.java
+CommandPolicyMatrixTest.java
+CommandSegmenterTest.java
+CommandPolicyBaselineTest.java
+<<<END
+TOKENS: 本轮 输入 13,268 / 输出 187 / 总计 13,455 tokens
+
+=== CASE 3 : 执行命令获取当前系统日期，只回答日期结果本身 ===
+ANSWER>>> 2026年10月12日
+<<<END
+TOKENS: 本轮 输入 12,648 / 输出 76 / 总计 12,724 tokens
+
+=== CASE 4 : 请记住一条信息：项目代号是 Falcon-7。只回答是否已保存成功 ===
+ANSWER>>> 已保存成功。
+<<<END
+TOKENS: 本轮 输入 12,631 / 输出 97 / 总计 12,728 tokens
+
+=== CASE 5 : 列出本机已保存的技能名称，并读取该技能的正文，用两三句话概括其要点 ===
+ANSWER>>> 本机已保存的技能只有一个：brainstorming。
+
+其正文要点概括如下：这是一套把模糊想法转化为可落地设计规格的方法论，核心是先对需求分类（可行性探针 spike、有界改动 bounded、架构级 architectural 三种路径），再通过澄清意图、写回理解、逐步给出方案来获得用户确认。整个过程有一个硬性门槛：在未得到用户对当前阶段产物的明确批准前，不得进入任何实现动作，且复杂度只升不降、不可中途降级。
+<<<END
+TOKENS: 本轮 输入 22,035 / 输出 251 / 总计 22,286 tokens
+

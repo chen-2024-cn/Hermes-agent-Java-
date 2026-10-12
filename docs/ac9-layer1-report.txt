@@ -1,5 +1,5 @@
 === Jhermes 命令安全自检（纯分类，未执行任何命令）===
-平台: windows   规则数: 38   用例: 67
+平台: windows   规则数: 39   用例: 67
 
 [PASS] BLOCKED     del /s /q C:\
          规则: unknown-command-write, workspace-boundary-escalation, blocked-destructive-delete
@@ -196,10 +196,10 @@
          理由: 利用系统内置二进制下载可执行文件
          处置: 强确认（键入 yes）；非交互拒绝；--yolo 不跳过
          期望≥: DANGEROUS   # LOLBin download
-[PASS] DANGEROUS   taskkill /f /im java.exe
-         规则: write-taskkill, workspace-boundary-escalation
-         理由: 高危操作，需强确认（键入 yes）
-         处置: 强确认（键入 yes）；非交互拒绝；--yolo 不跳过
+[PASS] WRITE       taskkill /f /im java.exe
+         规则: write-taskkill
+         理由: 终止进程会中断其未完成的工作
+         处置: 确认 [y]/[n]/[a]；非交互拒绝；--yolo 可跳过
          期望≥: WRITE   # kill processes (write level, needs confirm)
 [PASS] BLOCKED     kill -9 1
          规则: unknown-command-write, blocked-kill-pid1

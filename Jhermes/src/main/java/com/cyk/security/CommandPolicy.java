@@ -239,14 +239,29 @@ public class CommandPolicy {
         return CommandLevel.WRITE;
     }
 
-    /** 段的任一路径参数是否越出工作区（R9）。 */
+    /**
+     * 段的任一路径参数是否越出工作区（R9）。
+     *
+     * <p>传入平台标志：Windows 下 {@code date /t} 的 {@code /t}、{@code echo %date%} 的
+     * {@code %date%} 是参数开关与标量变量而非路径，不得触发升档（P0-2 缺陷修复）；
+     * Unix 下同名 token 仍按绝对路径处理，行为零变化。</p>
+     */
     private boolean segmentPathEscapes(CommandSegment seg) {
+        boolean windows = isWindowsPlatform();
         for (String p : seg.pathCandidates()) {
-            if (WorkspacePathAnalyzer.escapesWorkspace(p, workspace)) {
+            if (WorkspacePathAnalyzer.escapesWorkspace(p, workspace, windows)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * 当前平台是否为 Windows，取自规则集（与规则匹配的 {@code platforms:} 判定同源，
+     * 避免两处各自读 {@code os.name} 而出现不一致）。
+     */
+    private boolean isWindowsPlatform() {
+        return "windows".equalsIgnoreCase(ruleSet.currentPlatform());
     }
 
     /**

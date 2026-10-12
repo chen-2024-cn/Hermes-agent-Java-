@@ -232,12 +232,30 @@ rules:
     match: { exe: ["echo", "printf", "date", "whoami", "id", "uname", "hostname", "env", "set", "printenv",
                    "ps", "tasklist", "get-process", "top", "df", "du", "free", "uptime", "wc", "file", "stat",
                    "netstat", "ss", "lsblk", "get-command", "get-help", "test-path", "measure-object", "sort", "uniq", "cut", "tr",
-                   "sleep", "start-sleep"] }
+                   "sleep", "start-sleep",
+                   # Windows PowerShell 只读查询 cmdlet（P0-2 缺陷修复：terminal-tool 指引建议用 PowerShell
+                   # 语法，但 get-date/get-location 这类最常用的查询词未入白名单，落到
+                   # unknown-command-write → WRITE → 非交互环境下一律被拒，导致“取当前日期”这类纯只读
+                   # 任务必然失败。仅追加 get-* 纯查询词；get-itemproperty（注册表读）刻意不纳入：
+                   # 与 set-itemproperty 只差一词，价值低且会让写侧规则漏配时更难被发现）
+                   "get-date", "get-location", "get-item", "get-psdrive", "get-alias", "get-variable",
+                   "get-host", "get-executionpolicy", "get-random", "get-unique", "get-culture",
+                   "get-uiculture", "get-timezone", "get-computerinfo", "get-history", "get-service",
+                   "get-netadapter", "get-netipconfiguration", "get-ciminstance", "get-wmiobject"] }
 
   - id: readonly-ping-dns
     level: READ_ONLY
     reason: 网络连通性/域名查询为只读（不外发本地数据）
     match: { exe: ["ping", "nslookup", "dig", "host", "resolve-dnsname", "tracert", "traceroute", "ipconfig", "ifconfig", "get-netipaddress"] }
+
+  # time 带约束白名单（P0-2 缺陷修复，与上方 find/sed/curl 同一“白名单带约束”手法）：
+  # 只放行显示形式 time /t；裸写 time 在 cmd 下会提示“Enter the new time:”，
+  # 管道输入时存在改系统时间的副作用，故不得整体入只读白名单（保守优先）。
+  - id: readonly-time-display
+    level: READ_ONLY
+    reason: time /t 仅显示当前时间（裸 time 可提示设置时间，故约束到 /t）
+    platform: [windows]
+    match: { exe: ["time"], flags_any: ["/t"] }
 
   - id: readonly-tool-version
     level: READ_ONLY

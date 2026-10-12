@@ -27,11 +27,23 @@ class CommandPolicyMatrixTest {
 
     private static CommandPolicy policy;
 
+    /**
+     * 当前测试平台是否为 Windows（取自规则集，与生产判定同源）。
+     *
+     * <p>为何不跳过而做分支断言：CI 同时跑 windows + ubuntu，两平台上
+     * {@code date /t} 的<b>期望本来就不同</b>（Windows 是开关，Unix 是绝对路径）。
+     * 分支断言让两个平台都在真正验证东西，而不是其中一个直接绿掉。</p>
+     */
+    private static boolean windows;
+
+    private static SecurityRuleSet ruleSet;
+
     @BeforeAll
     static void setUp() {
-        SecurityRuleSet ruleSet = SecurityRuleSet.loadDefaultOnly();
+        ruleSet = SecurityRuleSet.loadDefaultOnly();
         // 规则表必须成功加载且非空——空规则集等于「全放行」，是不允许的启动状态
         assertThat(ruleSet.size()).as("内置规则表必须加载成功").isGreaterThan(20);
+        windows = "windows".equalsIgnoreCase(ruleSet.currentPlatform());
         policy = new CommandPolicy(ruleSet);
     }
 
@@ -296,6 +308,110 @@ class CommandPolicyMatrixTest {
         assertThat(level("rm -rf ../secret"))
                 .as("越界递归删除升为 DANGEROUS")
                 .isEqualTo(CommandLevel.DANGEROUS);
+    }
+
+    // =========================================================================
+    // P0-2 缺陷修复：Windows 只读 cmdlet 与参数开关不再误判
+    // （审计取证来源：R10 抽样回归中「获取系统日期」在管道（非交互）下必失败）
+    // =========================================================================
+
+    @ParameterizedTest(name = "PowerShell 只读查询: {0}")
+    @ValueSource(strings = {
+            "Get-Date",
+            "get-date",
+            "Get-Date -Format \"yyyy-MM-dd\"",
+            "Get-Location",
+            "Get-Item pom.xml",
+            "Get-Service",
+            "Get-TimeZone",
+            "Get-ComputerInfo",
+            "Get-PSDrive",
+            "Get-History",
+            "get-childitem -Recurse -Filter *.java"
+    })
+    @DisplayName("缺陷①：PowerShell 只读查询 cmdlet → READ_ONLY（不再落入 unknown-command-write）")
+    void powershellReadOnlyCmdletsAreReadOnly(String cmd) {
+        // 平台无关：这些 cmdlet 名本就该在只读白名单里，与开关解析无关
+        assertThat(level(cmd)).as("'%s' 应为 READ_ONLY（纯查询无副作用）", cmd)
+                .isEqualTo(CommandLevel.READ_ONLY);
+    }
+
+    @Test
+    @DisplayName("缺陷①反证：get-* 白名单未意外放行写类 cmdlet")
+    void writeCmdletsAreNotWhitelistedByMistake() {
+        // 只追加了 get-* 纯查询词；set-/remove-/new-/stop- 绝不得因此降级为 READ_ONLY
+        for (String cmd : new String[]{"Set-Content a.txt -Value x", "Remove-Item a.txt",
+                "New-Item -Path x.txt", "Stop-Process -Id 1", "Set-ItemProperty x -Name y"}) {
+            assertThat(level(cmd).severity())
+                    .as("'%s' 不得被当成只读", cmd)
+                    .isGreaterThan(CommandLevel.READ_ONLY.severity());
+        }
+    }
+
+    @Test
+    @DisplayName("缺陷②：Windows 下 date /t 为 READ_ONLY；Unix 下 /t 是绝对路径仍升档（C-2 分支证据）")
+    void dateSlashTIsPlatformDependent() {
+        if (windows) {
+            assertThat(level("date /t")).as("Windows：/t 是 cmd 开关，不应升档")
+                    .isEqualTo(CommandLevel.READ_ONLY);
+            // time /t 由带约束白名单 readonly-time-display 放行（platform: windows + flags_any: /t）
+            assertThat(level("time /t")).isEqualTo(CommandLevel.READ_ONLY);
+            // 白名单带约束的反证：裸 time 在 cmd 下会提示「Enter the new time:」，
+            // 管道输入时存在改系统时间的副作用，故必须保持保守（不得因 /t 规则而降档）
+            assertThat(level("time").severity())
+                    .as("裸 time 可提示设置系统时间，不得进只读白名单")
+                    .isGreaterThan(CommandLevel.READ_ONLY.severity());
+        } else {
+            assertThat(level("date /t").severity())
+                    .as("Unix：/t 是绝对路径，应保持越界升档（本次修复不放宽 Unix）")
+                    .isGreaterThan(CommandLevel.READ_ONLY.severity());
+            // Unix 上 time 是计时前缀（time <cmd>），不带约束白名单，保持保守
+            assertThat(level("time /t").severity())
+                    .as("Unix 下 /t 仍是绝对路径")
+                    .isGreaterThan(CommandLevel.READ_ONLY.severity());
+        }
+    }
+
+    @Test
+    @DisplayName("缺陷②：%date% 等非路径变量不再升档（两平台一致，echo 仍是只读）")
+    void nonPathEnvVarsNoLongerEscalate() {
+        assertThat(level("echo %date%")).as("%date% 是值不是位置")
+                .isEqualTo(CommandLevel.READ_ONLY);
+        assertThat(level("echo %time%")).isEqualTo(CommandLevel.READ_ONLY);
+        assertThat(level("echo %cd%")).as("%cd% 就是工作区本身")
+                .isEqualTo(CommandLevel.READ_ONLY);
+    }
+
+    @Test
+    @DisplayName("保守性未放宽：真实越界的环境变量与绝对路径仍升档")
+    void realEscapesStillEscalateAfterFix() {
+        for (String cmd : new String[]{"echo %userprofile%", "echo %temp%\\x.txt",
+                "cat %appdata%\\x", "echo $env:userprofile", "ls /tmp", "cat /etc/hosts"}) {
+            assertThat(level(cmd).severity())
+                    .as("'%s' 仍属越界访问，修复后不得放行", cmd)
+                    .isGreaterThan(CommandLevel.READ_ONLY.severity());
+        }
+    }
+
+    @Test
+    @DisplayName("保守性未放宽：未知环境变量仍升档（C-3）")
+    void unknownEnvVarStillEscalates() {
+        assertThat(level("echo %my_custom_root%").severity())
+                .isGreaterThan(CommandLevel.READ_ONLY.severity());
+    }
+
+    @Test
+    @DisplayName("灾难线未放宽：含短开关的递归删除与关机仍 BLOCKED（AC9 期望不变）")
+    void catastrophicLinesUnaffectedBySwitchExemption() {
+        // 这几条同时包含 /s /t /q 短开关，必须继续 BLOCKED：
+        // 开关豁免只作用于「越界升一档」，不作用于灾难与专属拦截规则
+        for (String cmd : new String[]{"del /s /q C:\\", "rd /s /q C:\\",
+                "shutdown /s /t 0", "rm -rf /t", "Remove-Item -Recurse -Force C:\\"}) {
+            assertThat(level(cmd)).as("'%s' 仍须 BLOCKED", cmd)
+                    .isEqualTo(CommandLevel.BLOCKED);
+        }
+        // %USERPROFILE% 作为删除目标仍是灾难（AC9 第 30 行期望）
+        assertThat(level("del /s /q %USERPROFILE%")).isEqualTo(CommandLevel.BLOCKED);
     }
 
     @Test
