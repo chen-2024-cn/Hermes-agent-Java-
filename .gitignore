@@ -2,6 +2,8 @@
 target/
 *.jar
 *.war
+# shade 插件构建副产物（每次 package 自动生成，不得入库；2026-10-13 清理时移除误提交的旧文件）
+dependency-reduced-pom.xml
 
 # IDE files
 .idea/
@@ -34,5 +36,5 @@ doc/
 # Docker compose 本机覆盖（模板见 .env.example）
 .env
 
-# Java ????
+# Java 编译产物
 *.class
