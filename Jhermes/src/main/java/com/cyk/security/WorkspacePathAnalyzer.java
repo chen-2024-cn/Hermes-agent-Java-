@@ -173,7 +173,10 @@ public final class WorkspacePathAnalyzer {
                 return true;// 工作区未知时，绝对路径按越界保守处理
             }
             try {
-                Path target = Paths.get(rawPathUnquote(rawPath)).toAbsolutePath().normalize();
+                Path target = Paths.get(rawPathUnquote(rawPath));
+                // Non-native absolute syntax must not become workspace-relative on this host.
+                if (!target.isAbsolute()) return true;
+                target = target.normalize();
                 Path root = workDir.toAbsolutePath().normalize();
                 return !target.startsWith(root);
             } catch (RuntimeException e) {

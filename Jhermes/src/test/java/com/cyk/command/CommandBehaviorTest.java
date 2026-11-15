@@ -19,7 +19,9 @@ class CommandBehaviorTest {
         StringWriter err = new StringWriter();
         CommandLine cli = HermesAgent.commandLine()
                 .setOut(new PrintWriter(out, true)).setErr(new PrintWriter(err, true));
-        return new Result(cli.execute(args), out.toString(), err.toString());
+        int exit = cli.execute(args);
+        return new Result(exit, org.jline.utils.AttributedString.fromAnsi(out.toString()).toString(),
+                org.jline.utils.AttributedString.fromAnsi(err.toString()).toString());
     }
 
     @Test void onlySupportedCommandsAreRegistered() {

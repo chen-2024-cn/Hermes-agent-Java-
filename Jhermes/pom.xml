@@ -9,7 +9,7 @@
          Constants.VERSION 与 picocli 版本输出均从该文件读取；
          发布工作流的 tag / 产物名也由 pom 派生校验（release-upload.yml）。
          历史教训：版本曾在 Constants(2.1.0) / pom(1.0-SNAPSHOT) / tag(v2.1.0) 三处漂移。 -->
-    <version>2.2.0</version>
+    <version>2.2.1</version>
     <packaging>jar</packaging>
 
     <name>Jhermes</name>

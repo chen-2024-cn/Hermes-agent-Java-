@@ -158,7 +158,15 @@ public final class JLineUserInput implements UserInput {
                 if (activeStartup != null && activeStartup.needsRefresh(terminal.getWidth(), terminal.getHeight())) {
                     redisplay();
                 }
-                int next = bindingReader.peekCharacter(activeStartup != null && activeStartup.isAnimating() ? 40 : 80);
+                int next;
+                try {
+                    next = bindingReader.peekCharacter(activeStartup != null && activeStartup.isAnimating() ? 40 : 80);
+                } catch (java.io.IOError e) {
+                    if (e.getCause() instanceof org.jline.utils.ClosedException) {
+                        throw new EndOfFileException(e.getCause());
+                    }
+                    throw e;
+                }
                 if (next != org.jline.utils.NonBlockingReader.READ_EXPIRED) return super.doReadBinding(keys, local);
             }
             return super.doReadBinding(keys, local);

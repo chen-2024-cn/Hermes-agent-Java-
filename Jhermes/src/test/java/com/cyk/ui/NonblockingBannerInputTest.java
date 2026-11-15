@@ -1,13 +1,9 @@
 package com.cyk.ui;
 
 import com.cyk.util.BannerAnimation;
-import org.jline.terminal.Attributes;
-import org.jline.terminal.Size;
 import org.jline.terminal.Terminal;
-import org.jline.terminal.TerminalBuilder;
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -17,18 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class NonblockingBannerInputTest {
     private Terminal terminal(String keys, ByteArrayOutputStream output) throws Exception {
-        Terminal terminal = TerminalBuilder.builder().system(false).type("xterm").paused(true)
-                .size(new Size(80, 35)).encoding(StandardCharsets.UTF_8)
-                .streams(new ByteArrayInputStream(keys.getBytes(StandardCharsets.UTF_8)), output).build();
-        var attributes = terminal.getAttributes();
-        attributes.setInputFlag(Attributes.InputFlag.ICRNL, false);
-        attributes.setInputFlag(Attributes.InputFlag.INLCR, false);
-        attributes.setLocalFlag(Attributes.LocalFlag.ECHO, false);
-        attributes.setLocalFlag(Attributes.LocalFlag.ICANON, false);
-        attributes.setLocalFlag(Attributes.LocalFlag.ISIG, false);
-        terminal.setAttributes(attributes);
-        terminal.resume();
-        return terminal;
+        return InputTerminalFixture.terminal(keys, output, 80, 35);
     }
 
     private BannerAnimation.Presentation presentation(AtomicLong clock) {

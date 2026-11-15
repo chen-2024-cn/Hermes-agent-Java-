@@ -1,10 +1,8 @@
 package com.cyk.ui;
 
 import org.jline.terminal.Terminal;
-import org.jline.terminal.TerminalBuilder;
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
@@ -12,33 +10,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class JLineUserInputTest {
     private Terminal terminal(String input) throws Exception {
-        Terminal terminal = TerminalBuilder.builder().system(false).type("xterm").paused(true)
-                .streams(new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)), new ByteArrayOutputStream())
-                .encoding(StandardCharsets.UTF_8).build();
-        // Feed bytes only after raw attributes are installed, like a real line editor.
-        var attributes = terminal.getAttributes();
-        attributes.setInputFlag(org.jline.terminal.Attributes.InputFlag.ICRNL, false);
-        attributes.setInputFlag(org.jline.terminal.Attributes.InputFlag.INLCR, false);
-        attributes.setLocalFlag(org.jline.terminal.Attributes.LocalFlag.ISIG, false);
-        attributes.setLocalFlag(org.jline.terminal.Attributes.LocalFlag.ICANON, false);
-        attributes.setLocalFlag(org.jline.terminal.Attributes.LocalFlag.ECHO, false);
-        terminal.setAttributes(attributes);
-        terminal.resume();
-        return terminal;
+        return InputTerminalFixture.terminal(input, new ByteArrayOutputStream(), 80, 35);
     }
 
     @Test void pastedTextIsCollapsedInOutputButSubmittedInFull() throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Terminal terminal = TerminalBuilder.builder().system(false).type("xterm").paused(true)
-                .streams(new ByteArrayInputStream("前\033[200~PRIVATE_ONE\nPRIVATE_TWO\033[201~后\r".getBytes(StandardCharsets.UTF_8)), output)
-                .encoding(StandardCharsets.UTF_8).build();
-        var attributes = terminal.getAttributes();
-        attributes.setInputFlag(org.jline.terminal.Attributes.InputFlag.ICRNL, false);
-        attributes.setLocalFlag(org.jline.terminal.Attributes.LocalFlag.ISIG, false);
-        attributes.setLocalFlag(org.jline.terminal.Attributes.LocalFlag.ICANON, false);
-        attributes.setLocalFlag(org.jline.terminal.Attributes.LocalFlag.ECHO, false);
-        terminal.setAttributes(attributes);
-        terminal.resume();
+        Terminal terminal = InputTerminalFixture.terminal(
+                "前\033[200~PRIVATE_ONE\nPRIVATE_TWO\033[201~后\r", output, 80, 35);
         try (terminal) {
             JLineUserInput input = new JLineUserInput(terminal, () -> new ClipboardReader.Content("", null));
             assertThat(input.readMessage("", new InputDraft())).isEqualTo("前PRIVATE_ONE\nPRIVATE_TWO后");
