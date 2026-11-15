@@ -6,11 +6,28 @@ import com.cyk.config.HermesConfig;
 import com.cyk.constant.Constants;
 import com.cyk.controller.TrajectoryCollector;
 import com.cyk.extract.KnowledgeExtractor;
+import com.cyk.http.LlmClient;
+import com.cyk.http.LlmRetryPolicy;
+import com.cyk.http.LlmTransportException;
 import com.cyk.http.ModelClient;
+import com.cyk.capability.CapabilityRegistry;
+import com.cyk.command.slash.CommandOutcome;
+import com.cyk.command.slash.SlashCommandContext;
+import com.cyk.command.slash.SlashCommandRegistry;
 import com.cyk.manager.MemoryManager;
 import com.cyk.manager.SessionManager;
+import com.cyk.manager.SkillManager;
+import com.cyk.prompt.ComposedPrompt;
+import com.cyk.prompt.ContextReport;
+import com.cyk.prompt.PromptComposer;
+import com.cyk.prompt.PromptConsistencyChecker;
+import com.cyk.prompt.PromptContext;
+import com.cyk.prompt.WorkingDirSnapshot;
 import com.cyk.tool.ToolRegistry;
 import com.cyk.tool.SkillTool;
+import com.cyk.ui.Ui;
+import com.cyk.ui.UserInput;
+import com.cyk.ui.WaitingAnimation;
 import com.cyk.util.ConsoleUi;
 import com.cyk.util.TokenUsageTracker;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -18,17 +35,29 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.*;
+import java.util.function.Consumer;
 
 public class Agent {
     private static final Logger logger = LoggerFactory.getLogger(Agent.class);
+
+    /**
+     * 重发上一个失败回合的斜杠命令（P0-5 R2）。
+     *
+     * <p>命令名的<b>单一事实源</b>在 {@link SlashCommandRegistry}（P0-3 期 5）：
+     * 本常量仅作引用，供提示文案（失败后的「输入 /retry 重发」）与单测复用，
+     * 不再各写一份字面量。</p>
+     */
+    static final String RETRY_COMMAND = SlashCommandRegistry.RETRY_COMMAND;
+
     private final HermesConfig config;
-    private final ModelClient modelClient;//向模型发送http请求
+    /**
+     * LLM 调用抽象（P0-5 R0）：生产为 {@link ModelClient}，单测可注入手写桩
+     * 以在不发起网络请求的前提下验证重试与错误边界。
+     */
+    private final LlmClient llmClient;
+    /** 指数退避重试策略（P0-5 R3）：UI 提示经下方回调打印，不污染 stdout 以外通道。 */
+    private final LlmRetryPolicy retryPolicy;
 
     private List<Map<String, Object>> toolDefinitions;//各个工具的定义
     private ToolRegistry toolRegistry;
@@ -40,7 +69,53 @@ public class Agent {
     private KnowledgeExtractor knowledgeExtractor;
     private SessionManager sessionManager;
     private MemoryManager memoryManager;
-    private SkillMatcher skillMatcher;
+
+    /**
+     * 系统提示词装配器（P0-3）：提示词分段、requires 判定与模板渲染全部下沉到
+     * prompt 包，Agent 只负责供给装配上下文（注册实况/目录快照/记忆/技能）。
+     * 无状态可共享：每回合调用 compose()，输入相同则输出逐字节相同（P0-4 R8 前缀稳定）。
+     */
+    private final PromptComposer promptComposer = new PromptComposer();
+    private final com.cyk.prompt.ProjectInstructionManager projectInstructions;
+
+    /**
+     * 斜杠命令注册表（P0-3 R4，决策 D-4）：预置 exit / {@code /retry} / {@code /help}。
+     *
+     * <p>改造前这三条逻辑散在 {@link #run()} 主循环的 {@code if} 分支里，
+     * 「当前有哪些命令」无处可查，{@code /help} 也就无从写起。
+     * 收口后主循环只剩下一个 {@code dispatch}，追加命令（P0-4 的 {@code /context}、
+     * P1-3 的 {@code /model}{@code /config}）不必再改主循环。</p>
+     */
+    private final SlashCommandRegistry slashCommands = SlashCommandRegistry.withBuiltins();
+
+    /**
+     * 最近一次装配出的系统提示词（含逐段明细）。
+     *
+     * <p>{@code /context} 要列出"system 提示词里每一段各占多少"，这些明细只有装配那一刻才有，
+     * 所以装配完要存下来。尚未装配（还没调用 {@link #installSystemPrompt()}）时为 null。</p>
+     */
+    private ComposedPrompt lastComposedPrompt;
+
+    /**
+     * 最近一次"估算 vs 服务商实测"的对账样本，{@code /context} 末尾用它显示偏差。
+     * 还没收到过带用量的响应时为 null。
+     */
+    private ContextReport.ApiSample lastApiSample;
+
+    /**
+     * tools JSON 的字符数缓存。工具定义在会话期间不会变，所以只算一次；-1 表示还没算过。
+     * （每次发请求前都要估算输入 token，没必要每次都重新序列化一遍 16 个工具。）
+     */
+    private int cachedToolsJsonChars = -1;
+
+    /**
+     * 历史压缩器（P0-4 R7）。必须整个会话共用<b>同一个实例</b>：它要记住折叠边界，
+     * 才能让前缀在多轮之间保持稳定（原理见 {@link HistoryCompressor} 类注释）。
+     */
+    private final HistoryCompressor historyCompressor = new HistoryCompressor();
+
+    /** 最近一次请求的压缩结果，仅供 /context 展示；还没发过请求或压缩被关闭时为 null。 */
+    private HistoryCompressor.Result lastCompression;
 
     /**
      * 已持久化到 session 的对话历史下标。
@@ -49,6 +124,9 @@ public class Agent {
      * 新消息追加进 session，避免重复写入；恢复会话（resume）加载历史后需同步抬高该下标。</p>
      */
     private int persistedIndex = 0;
+
+    /** The in-memory session may be ahead of disk after a failed atomic write. */
+    private boolean pendingPersistence;
 
     /**
      * 本次运行开始时已载入的历史消息数（resume 基线）。
@@ -69,6 +147,25 @@ public class Agent {
      * <p>防止 exit 命令与 EOF 分支重复调用 {@link #endSession(boolean)}（重复调用会二次关闭收集器线程）。</p>
      */
     private boolean sessionClosed = false;
+    private boolean switchRequested;
+    private String switchTarget;
+    private boolean inputHintsShown;
+    private Session preparedSession;
+    private boolean switchingAway;
+
+    /**
+     * 上一个因传输错误失败的用户输入，供 {@code /retry} 重发（P0-5 R2）。
+     *
+     * <p>成功回合会清空；重试再次失败则保留，使用户可连续重试。
+     * 重发不重新入队 user 消息——回滚时该条 user 消息被有意保留在历史里。</p>
+     */
+    private String lastFailedInput;
+
+    /** 本轮流式输出是否已吐过文本：重试时用于提示「以下为完整回答」，避免用户误以为重复输出。 */
+    private boolean streamEmitted;
+
+    /** UI-only state for the current model request, including its retry backoff. */
+    private WaitingAnimation waitingAnimation;
 
     public Agent(HermesConfig config) {
         this(config, null);
@@ -79,8 +176,46 @@ public class Agent {
      * @param resumeSessionId  要恢复的历史会话 id；null 表示新建随机会话
      */
     public Agent(HermesConfig config, String resumeSessionId) {
+        this(config, resumeSessionId, new ModelClient(config));
+    }
+
+    /**
+     * 测试专用构造（P0-5 R0）：注入 {@link LlmClient} 桩以验证错误边界与重试行为。
+     * 包级可见，不进入公共 API。
+     */
+    Agent(HermesConfig config, String resumeSessionId, LlmClient llmClient) {
+        this(config, resumeSessionId, llmClient,
+                new SessionManager(Constants.getHermesHome(), config.getSessionMaxMessages()), true);
+    }
+
+    /**
+     * 完整接缝构造（P0-5 测试专用，包级可见）。
+     *
+     * <p>为何需要：{@code Agent} 常规路径会在真实 {@code ~/.jhermes} 下创建会话文件、
+     * 轨迹目录并拉起后台守护线程，单测直接跑会污染用户数据。本构造允许：</p>
+     * <ul>
+     *   <li>{@code sessionManager} 指向临时目录，保证会话读写封闭在测试内；</li>
+     *   <li>{@code learningEnabled=false} 跳过轨迹收集与知识提取（不建目录、不起线程、
+     *       退出时不调 LLM），使 AC1–AC7 能在毫秒级完成。</li>
+     * </ul>
+     *
+     * <p>这是显式的测试接缝，而非给生产代码加全局数据目录覆盖开关——
+     * 后者会多出一条可被外部进程利用的重定向通道（安全面），而接缝只存在于包内。</p>
+     */
+    Agent(HermesConfig config, String resumeSessionId, LlmClient llmClient,
+          SessionManager sessionManager, boolean learningEnabled) {
+        this(config, resumeSessionId, llmClient, sessionManager, learningEnabled,
+                new com.cyk.prompt.ProjectInstructionManager(new com.cyk.prompt.ProjectInstructionLoader(
+                        java.nio.file.Path.of(System.getProperty("user.dir")), Constants.getHermesHome())));
+    }
+
+    Agent(HermesConfig config, String resumeSessionId, LlmClient llmClient,
+          SessionManager sessionManager, boolean learningEnabled,
+          com.cyk.prompt.ProjectInstructionManager projectInstructions) {
+        this.projectInstructions = projectInstructions;
         this.config = config;
-        this.modelClient = new ModelClient(config);
+        this.llmClient = llmClient;
+        this.retryPolicy = new LlmRetryPolicy(this::onRetryNotice);
         this.toolRegistry = ToolRegistry.getInstance();
 
         initializeTool();//初始化 ToolRegistry（注册文件、记忆、技能、搜索、抓取等工具），初始化toolDefinitions
@@ -91,16 +226,176 @@ public class Agent {
                 ? resumeSessionId
                 : "cli" + UUID.randomUUID().toString().substring(0, 8);
 
-        this.sessionManager = new SessionManager(Constants.getHermesHome());
+        // P0-2 R10：把真实会话 id 交给安全上下文，使审计记录的 session_id 正确。
+        // （initializeTool 触发 SecurityContext.init 时 sessionId 尚未赋值，此处补齐）
+        com.cyk.security.SecurityContext.setSessionId(this.sessionId);
+
+        // R6：会话消息上限可配（缺省 100，与改造前一致），由 SessionManager 注入到每个 Session
+        this.sessionManager = sessionManager;
 
         // resume 场景：先把磁盘上的历史消息载入对话上下文，并把 persistedIndex 抬高到已加载的数量，
         // 这样后续 persistSession 不会把这批历史再追加一遍
         loadResumedHistory(resumeSessionId);
 
         this.memoryManager = MemoryManager.getInstance();//初始化 MemoryManager（加载 MEMORY.md / USER.md）
-        this.skillMatcher = new SkillMatcher();
 
-        initializeLearningComponents();
+        if (learningEnabled) {
+            initializeLearningComponents();
+        }
+    }
+
+    /**
+     * 把系统提示词装入历史首位（P0-5 R7，供 {@link #run()} 与单测共用）。
+     *
+     * <p>使用 {@code add(0, ...)} 而非 {@code add(...)}：resume 场景下历史已从磁盘载入，
+     * 追加到末尾会让服务端把 system 当成一轮普通对话（附录 A6），
+     * 也会破坏前缀缓存所需的前缀稳定（P0-4 R8）。</p>
+     */
+    void installSystemPrompt() {
+        conversationHistory.add(0, ModelMessage.system(buildSystemPrompt()));
+        // Inserting at index 0 must also shift the saved and resumed history boundaries.
+        persistedIndex++;
+        resumedMessageCount++;
+    }
+
+    private void refreshSystemPrompt() {
+        if (!conversationHistory.isEmpty() && "system".equals(conversationHistory.get(0).getRole())) {
+            conversationHistory.set(0, ModelMessage.system(buildSystemPrompt()));
+        }
+    }
+
+    private void localCommand(String command, com.cyk.ui.InputDraft draft, Consumer<String> output) {
+        String[] parts = command.strip().split("\\s+");
+        String name = parts[0].toLowerCase(Locale.ROOT);
+        try {
+            if (name.equals("/init") && parts.length == 1) {
+                projectInstructions.initialize(output);
+            } else if (name.equals("/sessions") && parts.length == 1) {
+                var text = new java.io.StringWriter();
+                com.cyk.command.SessionsCommand.render(sessionManager.listSessions(), new java.io.PrintWriter(text),
+                        "/resume <会话ID>");
+                output.accept(text.toString());
+            } else if (name.equals("/chat") || name.equals("/resume")) {
+                if ((name.equals("/chat") && parts.length != 1) || parts.length > 2
+                        || (parts.length == 2 && parts[1].startsWith("-") && !parts[1].equals("--last"))) {
+                    output.accept("用法: /chat | /resume [会话ID或 --last]"); return;
+                }
+                if (draft != null && (draft.hasImages() || draft.hasBlocks())) {
+                    output.accept("草稿中仍有粘贴文字或图片, 请先发送或 /clear, 未切换会话。"); return;
+                }
+                String target = name.equals("/chat") ? null : com.cyk.command.SessionSelection.resolve(sessionManager,
+                        parts.length == 2 ? parts[1] : null, parts.length == 2 && parts[1].equals("--last"));
+                if (name.equals("/resume") && target == null) {
+                    output.accept("暂无可恢复的历史会话。"); return;
+                }
+                if (sessionId.equals(target)) { output.accept("当前已在会话 " + sessionId); return; }
+                switchTarget = target;
+                switchRequested = true;
+            } else if (name.equals("/debug") && parts.length >= 2 && parts[1].equals("tools-json")
+                    && (parts.length == 2 || (parts.length == 3 && List.of("--json", "--verbose").contains(parts[2])))) {
+                var text = new java.io.StringWriter();
+                boolean json = parts.length == 3 && parts[2].equals("--json");
+                boolean verbose = parts.length == 3 && parts[2].equals("--verbose");
+                com.cyk.command.DebugToolsJsonCommand.render(toolDefinitions, json, verbose, new java.io.PrintWriter(text));
+                output.accept(text.toString());
+            } else {
+                output.accept("用法: /init | /sessions | /resume [ID或 --last] | /chat | /debug tools-json [--json或 --verbose]");
+            }
+        } catch (java.io.IOException e) {
+            output.accept("命令未执行: " + e.getMessage());
+        }
+    }
+
+    public record ConversationRequest(boolean switching, String sessionId) { }
+
+    public synchronized boolean saveForSwitch() {
+        persistSession();
+        return !pendingPersistence && persistedIndex == conversationHistory.size();
+    }
+
+    /** Prepare a conversation using the same runtime, without replacing input or registered tools. */
+    public Agent prepareNextConversation(String target) throws java.io.IOException {
+        Session selected = target == null ? null : sessionManager.readExisting(target);
+        return new Agent(this, target, selected);
+    }
+
+    private Agent(Agent previous, String target, Session selected) {
+        config = previous.config;
+        llmClient = previous.llmClient;
+        retryPolicy = new LlmRetryPolicy(this::onRetryNotice);
+        toolRegistry = previous.toolRegistry;
+        toolDefinitions = previous.toolDefinitions;
+        sessionManager = previous.sessionManager;
+        memoryManager = previous.memoryManager;
+        projectInstructions = previous.projectInstructions;
+        trajectoryCollector = previous.trajectoryCollector;
+        knowledgeExtractor = previous.knowledgeExtractor;
+        sessionId = target == null ? "cli" + UUID.randomUUID().toString().substring(0, 8) : target;
+        conversationHistory = new ArrayList<>();
+        preparedSession = selected;
+        if (selected != null) {
+            for (Message message : selected.messages) conversationHistory.add(message.toModelMessage());
+            persistedIndex = conversationHistory.size();
+            resumedMessageCount = conversationHistory.size();
+        }
+        // No new background thread or global registry mutation while preparing a target.
+    }
+
+    public void activateNextConversation(Agent previous) {
+        if (preparedSession != null) sessionManager.useLoadedSession(preparedSession);
+        com.cyk.security.SecurityContext.startConversation(sessionId);
+        com.cyk.tool.TerminalTool.resetConversationCounts();
+        TokenUsageTracker.session().reset();
+        if (trajectoryCollector != null) trajectoryCollector.startSession(sessionId, config.getCurrentModel());
+        Ui.println("当前会话: " + sessionId + " (" + (resumedMessageCount > 0 ? "已恢复" : "新会话") + ")");
+    }
+
+    public boolean finishForSwitch() {
+        if (!saveForSwitch()) return false;
+        switchingAway = true;
+        endSession(true);
+        return true;
+    }
+
+    public void saveQuietly() { persistSessionQuietly(); }
+
+    /** 测试用：当前对话历史只读视图（包级可见）。 */
+    List<ModelMessage> conversationHistory() {
+        return Collections.unmodifiableList(conversationHistory);
+    }
+
+    /**
+     * 测试专用接缝：把一批消息追加进真实对话历史，模拟"已经聊了很久"的会话。
+     *
+     * <p>为什么需要：历史压缩要在历史很长时才触发，而 {@link #conversationHistory()} 只读，
+     * 测试无法直接构造长历史；真的用桩 LLM 跑几十轮又太绕。本方法只做 {@code addAll}，
+     * 不经过持久化水位，也不触发任何模型调用。包级可见，不进入公共 API。</p>
+     */
+    void seedHistoryForTest(List<ModelMessage> messages) {
+        conversationHistory.addAll(messages);
+    }
+
+    /** 测试用：当前会话 id（包级可见）。 */
+    String sessionId() {
+        return sessionId;
+    }
+
+    /**
+     * 测试专用接缝：以指定输出通道执行一条斜杠命令。
+     *
+     * <p>为何需要：命令接线在 {@link #run()} 内部，而 {@code run()} 会读 {@code System.in}
+     * 并起收尾流程，单测无法直接驱动。本接缝复用<b>与生产完全相同</b>的注册表实例、
+     * 能力快照取法与 retry 回调，仅把输出通道换成可捕获的 {@code Consumer}、
+     * 不碰输入流——因此它验证的正是「{@code /help} 的工具表与本 Agent 真实注册的工具同源」
+     * 这条接线（AC3），而不是另写一份帮助文本。</p>
+     *
+     * <p>包级可见，不进入公共 API（与 {@code clearForTest} 等既有接缝惯例一致）。</p>
+     */
+    CommandOutcome dispatchCommandForTest(String input, Consumer<String> output) {
+        return slashCommands.dispatch(input, new SlashCommandContext(
+                output, CapabilityRegistry.from(toolRegistry), this::retryLastTurn, this::renderContextReport,
+                command -> output.accept("当前测试入口未提供草稿输入。"),
+                command -> localCommand(command, null, output)));
     }
 
     /**
@@ -118,7 +413,10 @@ public class Agent {
         }
         Session session = sessionManager.getSession(resumeSessionId);
         for (Message msg : session.messages) {
-            conversationHistory.add(new ModelMessage(msg.role(), msg.content()));
+            // R5：完整还原为 ModelMessage（含 tool_calls / tool_call_id / name）。
+            // 改造前只搬 role 与 content，含工具调用的会话 resume 后 tool 消息丢失
+            // tool_call_id，请求体会被服务端以 400 拒绝（AC5 要验证的就是这一点）。
+            conversationHistory.add(msg.toModelMessage());
         }
         // 这些历史已经持久化过，抬高下标避免重复写入
         this.persistedIndex = conversationHistory.size();
@@ -135,7 +433,8 @@ public class Agent {
      */
     private List<ModelMessage> newMessagesThisRun() {
         int from = Math.min(resumedMessageCount, conversationHistory.size());
-        return new ArrayList<>(conversationHistory.subList(from, conversationHistory.size()));
+        return conversationHistory.subList(from, conversationHistory.size()).stream()
+                .map(ModelMessage::textOnlyCopy).toList();
     }
 
     //初始化学习组件
@@ -152,31 +451,72 @@ public class Agent {
      *
      * <p>增量持久化：只追加 {@link #persistedIndex} 之后的新消息，重复调用不会写入重复历史。
      * 同时过滤 system 提示词（每轮都会重建，无需持久化，且体积大会挤占 session 容量）。</p>
+     *
+     * <p>R4：本方法现在每个回合结束都调一次（而非仅退出时），并作为关闭钩子的入口，
+     * 因此必须：<b>synchronized</b>（钩子可能与主线程并发）、<b>不抛异常</b>
+     * （磁盘满、Windows 杀毒软件瞬时锁文件等 IO 故障不应终结对话）。得益于
+     * {@code saveSession} 写的是全量快照，本轮落盘失败时下轮成功即可自动补齐。</p>
      */
-    private void persistSession() {
+    synchronized void persistSession() {
+        boolean hasUserInput = conversationHistory.stream().anyMatch(message -> Message.hasUserInput(
+                message.getRole(), message.getContent(), message.getContentParts()));
+        if (!hasUserInput || (!pendingPersistence && persistedIndex == conversationHistory.size())) {
+            return;
+        }
         try {
             Session session = sessionManager.getSession(sessionId);
 
             //将「尚未持久化」的聊天历史增量保存到session，并跳过 system 消息
             for (int i = persistedIndex; i < conversationHistory.size(); i++) {
                 ModelMessage modelMessage = conversationHistory.get(i);
-                if (modelMessage.getRole() == null || modelMessage.getContent() == null) {
+                if (modelMessage.getRole() == null) {
                     continue;
                 }
                 if ("system".equals(modelMessage.getRole())) {
                     continue;
                 }
-                session.addMessage(modelMessage.getRole(), modelMessage.getContent());
+                // R5：搬运完整消息（含 tool_calls / tool_call_id / name），
+                // 只存 role+content 会让含工具调用的会话 resume 后请求体非法（附录 A5）
+                session.addMessage(modelMessage);
+                pendingPersistence = true;
             }
 
-            // 抬高水位下标，记录已持久化到的位置
+            // 抬高水位下标，记录已持久化到的位置。刻意在 save 之前抬高：
+            // 内存 Session 对象已持有这批消息，水位与之一致才能保证不重复追加；
+            // 若 save 失败，下轮的全量快照会把本轮内容一并写回。
             persistedIndex = conversationHistory.size();
 
-            sessionManager.saveSession(session);
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+            if (pendingPersistence) {
+                sessionManager.saveSession(session);
+                pendingPersistence = false;
+            }
+        } catch (Exception e) {
+            logger.warn("会话持久化失败（对话仍在内存中继续，下次落盘会自动补齐）: {}", e.getMessage());
         }
 
+    }
+
+    /**
+     * 重试前的用户提示（{@link LlmRetryPolicy.RetryNotifier} 实现）。
+     *
+     * <p>告诉用户程序没卡死、在等什么、要等多久。若本次失败发生在流式输出中途
+     * （已吐过半截文本），额外提示一句，避免重试后的完整回答被误认为输出重复。</p>
+     */
+    private void onRetryNotice(int attempt, int maxRetries, long backoffMillis, LlmTransportException error) {
+        if (waitingAnimation != null) waitingAnimation.pause();
+        String cause = error.statusCode() > 0 ? "HTTP " + error.statusCode() : "网络异常";
+        System.out.println();
+        System.out.println(ConsoleUi.dimPrefix() + "模型调用失败（" + cause + "），"
+                + formatSeconds(backoffMillis) + " 后重试(" + attempt + "/" + maxRetries + ")...");
+        if (streamEmitted) {
+            System.out.println(ConsoleUi.dimPrefix() + "上一段输出不完整，重试后重新给出完整回答。");
+        }
+        if (waitingAnimation != null) waitingAnimation.resume("等待重试");
+    }
+
+    /** 把毫秒格式化为可读秒数（500ms 显示 0.5s，2000ms 显示 2s）。 */
+    private static String formatSeconds(long millis) {
+        return millis >= 1000 && millis % 1000 == 0 ? (millis / 1000) + "s" : (millis / 1000.0) + "s";
     }
 
     /**
@@ -192,15 +532,28 @@ public class Agent {
         // ① 先持久化会话（纯本地 IO，瞬时完成）：保证聊天记录先安全落盘，
         //    后面的慢操作即使失败也不丢数据
         persistSession();
+        // R8：告知用户会话已安全保存，并直接给出可复制的恢复命令（免去先跑 sessions 找 id）
+        announceSessionSaved();
+
+        // 测试构造下轨迹收集与知识提取未启用，直接走关闭流程（避免 NPE）
+        boolean learningDisabled = trajectoryCollector == null || knowledgeExtractor == null;
 
         // ② 将聊天数据放入轨迹中（入队即返回，后台线程异步写盘）
         //    只上报本次运行新增的消息：resume 载入的旧历史在上一轮运行中已上报过，
         //    全量重放会让同一份对话重复写入轨迹样本，污染自我进化数据
         List<ModelMessage> newMessages = newMessagesThisRun();
-        for (ModelMessage modelMessage : newMessages) {
-            trajectoryCollector.addMessage(sessionId, modelMessage);
+        boolean hasNewUserInput = newMessages.stream().anyMatch(message -> Message.hasUserInput(
+                message.getRole(), message.getContent(), message.getContentParts()));
+        if (!learningDisabled) {
+            if (hasNewUserInput) {
+                for (ModelMessage modelMessage : newMessages) {
+                    trajectoryCollector.addMessage(sessionId, modelMessage);
+                }
+                trajectoryCollector.endSession(sessionId, completed);
+            } else {
+                trajectoryCollector.discardSession(sessionId);
+            }
         }
-        trajectoryCollector.endSession(sessionId, completed);
 
         // ③ 提取知识放最后：这一步包含 LLM 网络调用，可能耗时数十秒。
         //    旧实现把它放在 persistSession 之前且异常会直接冒泡，导致 exit 卡死体验差；
@@ -210,7 +563,7 @@ public class Agent {
         //    注意「📝 稍等」提示只在会话确实达到提取门槛时打印——短会话直接静默跳过，
         //    否则用户会看到“稍等”之后没有任何下文（KnowledgeExtractor 内部按门槛返回 empty）。
         //    提取对象同样只是本次新增消息（修复：resume 后直接 exit 不再重复提取旧历史）
-        if (completed && knowledgeExtractor.willExtract(newMessages)) {
+        if (!learningDisabled && hasNewUserInput && completed && knowledgeExtractor.willExtract(newMessages)) {
             try {
                 System.out.println("📝 稍等，正在回顾本次对话、沉淀值得记住的经验...");
                 ExtractionResult result = knowledgeExtractor.onSessionEnd(sessionId, newMessages);
@@ -237,9 +590,33 @@ public class Agent {
             }
         }
 
-        //关闭轨迹收集
-        trajectoryCollector.shutdown();
+        //关闭轨迹收集（仅开启自进化组件时存在）
+        if (!learningDisabled && !switchingAway) {
+            trajectoryCollector.shutdown();
+        }
 
+    }
+
+    /**
+     * 输出「会话已保存」提示（P0-5 R8，文案对齐规范 §14.1）。
+     *
+     * <p>形式：{@code 会话已保存（id: cli3f9a1c2e，12 条消息）· 恢复: Jhermes resume cli3f9a1c2e}。
+     * 旧实现退出时不告知会话去向，用户不知道可以用 resume 接续（附录 C-03 指出的体验缺口）。</p>
+     *
+     * <p>无消息（用户启动后直接 exit）时静默跳过，避免为一场空会话刷无用提示。</p>
+     */
+    private void announceSessionSaved() {
+        try {
+            Session session = sessionManager.getSession(sessionId);
+            if (!session.hasUserInput() || pendingPersistence || !sessionManager.sessionExists(sessionId)) {
+                return;
+            }
+            int messageCount = session.messages.size();
+            System.out.println("会话已保存（id: " + sessionId + "，" + messageCount + " 条消息）"
+                    + "· 恢复: " + Constants.CLI_NAME + " resume " + sessionId);
+        } catch (RuntimeException e) {
+            logger.debug("输出会话保存提示失败: {}", e.getMessage());
+        }
     }
 
     /**
@@ -265,19 +642,62 @@ public class Agent {
     }
 
 
-    public void run() {
-        conversationHistory.add(ModelMessage.system(buildSystemPrompt()));
-        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
+    public void run() { com.cyk.command.ChatRunner.runConversations(this); }
+
+    public ConversationRequest runConversation() {
+        // R7：system 提示词置于历史下标 0（对新会话与 resume 场景语义一致，见方法注释）
+        if (conversationHistory.isEmpty() || !"system".equals(conversationHistory.getFirst().getRole())) {
+            projectInstructions.refresh(Ui::println);
+            installSystemPrompt();
+        }
+
+        // P0-2 R0：复用 Ui 层的<b>全局唯一</b>输入通道，而不是再 new 一个
+        // BufferedReader(System.in)——确认闸门与本 REPL 必须共用同一个 reader，
+        // 否则 BufferedReader 的预读缓冲会把用户接下来要敲的 y/n 吞掉，
+        // 闸门永久阻塞（现象是「确认提示出来后敲什么都没反应」）。
+        UserInput userInput = Ui.userInput();
+
+        // 斜杠命令执行上下文：会话期内注册实况不变（initialize 只发生一次），
+        // 故能力快照一次定格，与本次会话的系统提示词使用同一份实况（AC3 同源）。
+        // /retry 经由本 ctx 回调 retryLastTurn，handler 不直接持有 Agent。
+        com.cyk.ui.InputDraft draft = new com.cyk.ui.InputDraft();
+        com.cyk.ui.InputCommands inputCommands = new com.cyk.ui.InputCommands(
+                draft, userInput, com.cyk.ui.ClipboardReader.system(), Ui::println);
+        SlashCommandContext commandContext = new SlashCommandContext(
+                Ui::println,
+                CapabilityRegistry.from(toolRegistry),
+                this::retryLastTurn,
+                this::renderContextReport,
+                inputCommands::execute,
+                command -> localCommand(command, draft, Ui::println));
+        userInput.configureCommands(slashCommands.menuChoices());
+        if (!inputHintsShown) {
+            String inputHint = userInput instanceof com.cyk.ui.JLineUserInput
+                    ? "Enter 发送; / 显示命令菜单; Ctrl+V / Win+V 粘贴; Alt+Enter 换行"
+                    : "当前为基础输入模式: 多行文字请用 /paste 或 /multiline, 命令用 /help 查看";
+            if (!(userInput instanceof com.cyk.ui.JLineUserInput editor) || !editor.appendStartupLine(inputHint)) {
+                Ui.println(inputHint);
+            }
+            String instructionStatus = projectInstructions.snapshot().startupStatus();
+            if (!(userInput instanceof com.cyk.ui.JLineUserInput editor) || !editor.appendStartupLine(instructionStatus)) {
+                Ui.println(instructionStatus);
+            }
+            for (var document : projectInstructions.snapshot().documents()) {
+                if (!document.ready()) Ui.println(document.source() + ": " + document.status());
+            }
+            inputHintsShown = true;
+        }
+
+        switchRequested = false;
         boolean firstPrompt = true;
         try {
             while (true) {
                 // 醒目的用户提示符：分隔线 + 绿色「▶ 你:」前缀（ConsoleUi 统一渲染，
                 // 支持 ANSI 的终端显示彩色，老终端自动降级为纯符号，绝不乱码）。
-                // 首轮不打分隔线，避免与启动横幅重叠。
-                System.out.print(ConsoleUi.userPrompt(!firstPrompt));
-                System.out.flush();
+                // 首轮不打分隔线，避免与启动横幅重叠——故先取值再翻转标志。
+                String prompt = ConsoleUi.userPrompt(!firstPrompt);
                 firstPrompt = false;
-                String input = reader.readLine();
+                String input = userInput.readMessage(prompt, draft);
                 // readLine() 返回 null 表示输入流已关闭（管道输入读完、Ctrl-D/Ctrl-Z、CI 非交互调用）。
                 // 原实现在此处 continue，会导致 CPU 空转刷屏无限循环；此处必须终止会话并退出。
                 if (input == null) {
@@ -286,33 +706,64 @@ public class Agent {
                     break;
                 }
                 // 输入为空白时不发请求（避免空转一轮 LLM 调用），继续提示输入
-                if (input.isBlank()) {
+                if (input.isBlank() && !draft.hasImages()) {
                     continue;
                 }
-                if (input.trim().equalsIgnoreCase("exit")) {
+                // P0-3 R4：命令解析收口——exit / /retry / /help 均由注册表处理
+                // （dispatch 内部自行 trim 与大小写归一，故直接传原始输入）。
+                // 三态返回区分「不是命令」与「命令已处理」：前者才发给模型，
+                // 后者（包括未知斜杠命令的就地提示）直接回到提示符，
+                // 不浪费一轮 token 让模型去解读 /blah 这种输入。
+                String commandInput = userInput.commandText(input);
+                if (slashCommands.isCommandInput(commandInput)) draft.discardPlainText();
+                CommandOutcome outcome = slashCommands.dispatch(commandInput, commandContext);
+                if (outcome == CommandOutcome.EXIT) {
                     break;
                 }
+                if (outcome == CommandOutcome.HANDLED) {
+                    if (switchRequested) {
+                        if (saveForSwitch()) return new ConversationRequest(true, switchTarget);
+                        switchRequested = false;
+                        Ui.println("会话保存失败, 未切换; 对话仍保留在当前内存中。");
+                    }
+                    continue;
+                }
 
-                //处理用户输入问题
-                processUserMessage(input);
+                // One submitted draft becomes exactly one user message, including all images.
+                List<String> images = draft.imageUrls();
+                draft.clear();
+                if (!images.isEmpty()) Ui.println("已附加 " + images.size() + " 张图片; 当前模型服务需支持视觉输入");
+                processUserMessage(input, images);
 
             }
-            // 先打印 goodbye 再做收尾：endSession 内部的知识提取涉及 LLM 网络调用（可能数十秒），
-            // 旧实现把 goodbye 放在提取之后，导致用户输入 exit 后面对长时间无响应的黑屏。
+            // 先打印告别语再做收尾：endSession 内部的知识提取涉及 LLM 网络调用（可能数十秒），
+            // 旧实现把告别语放在提取之后，导致用户输入 exit 后面对长时间无响应的黑屏。
             // 统一在此收尾：无论是 exit、EOF 还是循环异常退出，都保证会话被正确结束与持久化
-            System.out.println("goodbye！😊");
+            System.out.println("再见。");
             endSession(true);
+            return new ConversationRequest(false, null);
 
-        } catch (IOException e) {
-            // I/O 异常属于非正常结束，标记 completed=false，便于轨迹区分成功/失败会话
+        } catch (RuntimeException e) {
+            // 非正常结束：标记 completed=false，便于轨迹区分成功/失败会话。
+            // 输入层的 IOException 已由 UserInput 实现内部吸收（返回 null 走 EOF 收尾），
+            // 这里只剩真正的意外（如轨迹/记忆组件抛错），必须落盘后再交回 picocli。
             endSession(false);
-            throw new RuntimeException(e);
+            throw e;
         } finally {
-            try {
-                reader.close();
-            } catch (IOException ignored) {
-                // 关闭失败无需处理：进程即将退出
-            }
+            draft.clear();
+            // 不关闭共享 reader：确认闸门可能仍在等待输入，
+            // 且关闭 System.in 后无法恢复（见 UserInput.close() 的设计说明）
+            // The outer conversation controller owns terminal restoration.
+        }
+    }
+
+    /** 关闭钩子入口：吞掉异常，因为钩子里抛出会打断 JVM 退出并在屏幕上留下刺眼堆栈。 */
+    private void persistSessionQuietly() {
+        try {
+            persistSession();
+            logger.debug("关闭钩子已完成会话持久化");
+        } catch (Exception e) {
+            logger.warn("关闭钩子持久化会话失败: {}", e.getMessage());
         }
     }
 
@@ -321,19 +772,84 @@ public class Agent {
      *
      * @param input
      */
-    private void processUserMessage(String input) {
-        conversationHistory.add(ModelMessage.user(input));//将用户输入的内容添加到聊天内容
+    void processUserMessage(String input) {
+        processUserMessage(input, List.of());
+    }
 
+    void processUserMessage(String input, List<String> images) {
+        if (projectInstructions.refresh(Ui::println)) refreshSystemPrompt();
+        conversationHistory.add(ModelMessage.userMultimodal(input, images));
+        lastFailedInput = input;//先登记，回合失败时供 /retry 重发
+
+        runTurn();
+        persistSession();//R4 逐轮持久化：每个回合（含工具循环）结束后落盘
+    }
+
+    /**
+     * {@code /retry}：重发上一个失败回合的用户输入（P0-5 R2）。
+     *
+     * <p>不重新入队 user 消息——{@link #rollbackTurnTo} 回滚时刻意保留了该条消息，
+     * 再入队会让历史里出现两条相同的 user 消息并重复计费。</p>
+     */
+    void retryLastTurn() {
+        if (lastFailedInput == null) {
+            System.out.println(ConsoleUi.dimPrefix()
+                    + "当前没有可重试的失败回合（" + RETRY_COMMAND + " 仅在请求失败后可用）。");
+            return;
+        }
+        System.out.println(ConsoleUi.dimPrefix() + "正在重发上一轮请求…");
+        if (projectInstructions.refresh(Ui::println)) refreshSystemPrompt();
+        runTurn();
+        persistSession();
+    }
+
+    /**
+     * 执行一个「回合」：从已入队的 user 消息出发跑工具调用循环，直到模型给出最终文本回复。
+     *
+     * <p>R2 回合级错误边界：LLM 调用失败不再穿透到 REPL 主循环把进程带崩（附录 A1），
+     * 而是①回滚本回合的半截消息②向用户展示可读错误③保持 REPL 存活④登记 {@code /retry}。</p>
+     */
+    private void runTurn() {
         // 本轮 token 用量单独记账：一次提问在工具调用循环里可能触发多次模型请求，
         // 全部累加后才在轮末展示（只统计最后一次会严重低报）。
         // 每轮 new 一个实例 = 下轮自动归零，无需手动 reset。
         TokenUsageTracker turnUsage = new TokenUsageTracker();
+        // 回滚锚点：本回合开始时（user 消息已入队）的历史长度。
+        int safetyMark = conversationHistory.size();
 
+        try {
+            turnLoop(turnUsage);
+        } catch (LlmTransportException e) {
+            // 重试耗尽或不可重试的传输错误：可读错误 + 排查指引已由异常消息承载
+            rollbackTurnTo(safetyMark);
+            reportTurnFailure(e);
+            return;
+        } catch (RuntimeException e) {
+            // 兜住其余运行时异常（响应结构异常、工具注册表状态异常等），
+            // 保证任何单轮故障都不终结会话——这是 P0-5 的核心目标
+            rollbackTurnTo(safetyMark);
+            logger.warn("回合处理异常", e);
+            reportTurnFailure(e);
+            return;
+        }
+
+        // 回合成功：清除失败登记，打印用量汇总
+        lastFailedInput = null;
+        printUsageSummary(turnUsage);
+    }
+
+    /**
+     * 回合内的工具调用循环（原 processUserMessage 主体）。
+     *
+     * <p>刻意不做 catch：异常统一由 {@link #runTurn()} 处置，使「循环逻辑」与「错误边界」分离。</p>
+     */
+    private void turnLoop(TokenUsageTracker turnUsage) {
         boolean continueLoop = true;
         int turnCount = 0;//轮次数量
         while (continueLoop) {
             turnCount++;
-            //将工具定义，历史消息一起发送给模型；是否流式取决于配置/CLI 开关
+            // 流式模式下是否已吐过文本，供重试提示判断（见 onRetryNotice）
+            streamEmitted = false;
             boolean streaming = config.isStreamEnabled();
             ChatCompletionResponse response;
             if (streaming) {
@@ -343,16 +859,17 @@ public class Agent {
                 // 增量不直接裸打印，而是经过 ConsoleUi.StreamingRenderer 做跨 token 安全的
                 // 空白规范化：连续换行压缩为最多一个空行、行尾/开头空白清除（用户反馈的
                 // 「回答很多换行且不美观」的终端侧兜底；提示词侧已同步约束模型输出）。
-                boolean[] prefixPrinted = {false};
+                boolean[] prefixPrinted = {false};//是否打印过前缀，因为在lambda中不能修改外部局部变量，只能用数组绕过
                 ConsoleUi.StreamingRenderer renderer = ConsoleUi.newStreamingRenderer(text -> {
                     System.out.print(text);
                     System.out.flush();
                 });
-                response = modelClient.chatCompletionStream(conversationHistory, toolDefinitions, piece -> {
+                response = callLlm(piece -> {
                     if (!prefixPrinted[0]) {
                         System.out.print(ConsoleUi.assistantPrefix());
                         prefixPrinted[0] = true;
                     }
+                    streamEmitted = true;
                     renderer.accept(piece);
                 });
                 // 只有输出过正文才补换行，避免后续输出与正文粘连；纯工具轮不留空行
@@ -360,7 +877,7 @@ public class Agent {
                     System.out.println();
                 }
             } else {
-                response = modelClient.chatCompletion(conversationHistory, toolDefinitions, false);
+                response = callLlm(null);
             }
 
             // 用量累加：流式（stream_options.include_usage 尾 chunk）与非流式（根节点 usage）
@@ -390,6 +907,8 @@ public class Agent {
                 //执行工具调用
                 List<ToolCall> toolCalls = assistantMessage.getToolCalls();
                 for (ToolCall toolCall : toolCalls) {
+                    String name = toolCall.getFunction() == null ? "?" : toolCall.getFunction().getName();
+                    Ui.diagln(Constants.CLI_NAME + " · 正在执行工具: " + name);
                     String res = executeToolCall(toolCall);//调用工具
                     //将工具调用的结果也加入聊天记录
                     conversationHistory.add(ModelMessage.tool(res, toolCall.getId()));
@@ -416,11 +935,184 @@ public class Agent {
             }
 
         }
+    }
 
-        // 本轮收尾：在回复末尾附加用量汇总（工具调用轮与纯文本轮同样适用，
-        // 用户可据此看清一次提问背后走了几趟模型请求）
-        printUsageSummary(turnUsage);
+    /**
+     * 经重试策略调用 LLM（流式与非流式的统一入口，P0-5 R3）。
+     *
+     * <p>是否流式取决于配置/CLI 开关；调用方无需关心重试——可重试错误由
+     * {@link LlmRetryPolicy} 内部指数退避重发，不可重试错误立即抛出由 runTurn 处置。</p>
+     *
+     * @param onContent 流式文本增量回调；非流式或未使用时传 null
+     */
+    private ChatCompletionResponse callLlm(Consumer<String> onContent) {
+        // 先得到"真正要发给模型的消息列表"。历史不长时它就是 conversationHistory 本身；
+        // 历史很长时是折叠了旧工具结果的副本。真实历史始终不变（见 HistoryCompressor 的说明）。
+        // 注意只算一次：下面的重试 lambda 会被多次执行，每次都重新压缩既浪费又可能让边界多推进。
+        HistoryCompressor.Result outgoing = compressForRequest();
+        List<ModelMessage> messagesToSend = outgoing.messages();
 
+        // 必须在发请求【之前】估算，并且估算的是"实际发出去的内容"（压缩后的视图）：
+        // 请求完成后历史里会多出模型的回复和工具结果，那时再估算就和这次请求对不上了
+        // （见 ContextReport.ApiSample 的说明）
+        int estimatedTokens = ContextReport.estimateRequestTokens(
+                lastComposedPrompt, toolsJsonChars(), messagesToSend);
+
+        try (WaitingAnimation waiting = WaitingAnimation.create()) {
+            waitingAnimation = waiting;
+            Consumer<String> content = piece -> {
+                if (piece == null || piece.isEmpty()) return;
+                waiting.pause();
+                if (onContent != null) onContent.accept(piece);
+            };
+            ChatCompletionResponse response = retryPolicy.call(() -> {
+                waiting.resume("正在生成回答");
+                try {
+                    return config.isStreamEnabled()
+                            ? llmClient.chatCompletionStream(messagesToSend, toolDefinitions, content)
+                            : llmClient.chatCompletion(messagesToSend, toolDefinitions, false);
+                } finally {
+                    // Stop before returning text, logging an error, or asking for tool approval.
+                    waiting.pause();
+                }
+            });
+            recordApiSample(estimatedTokens, response);
+            return response;
+        } finally {
+            waitingAnimation = null;
+        }
+    }
+
+    /**
+     * 按配置决定是否压缩历史，并记下最近一次的压缩结果（供 /context 展示）。
+     *
+     * <p>压缩开关关闭时直接返回原历史，行为与引入压缩之前完全一致。</p>
+     */
+    private HistoryCompressor.Result compressForRequest() {
+        if (!config.isContextCompressionEnabled()) {
+            lastCompression = null;
+            return new HistoryCompressor.Result(conversationHistory, 0, 0);
+        }
+        HistoryCompressor.Result result = historyCompressor.compress(
+                conversationHistory, lastComposedPrompt, toolsJsonChars(), config.getContextWindowTokens());
+        lastCompression = result;
+        if (result.compressed()) {
+            logger.debug("历史压缩：折叠 {} 条旧工具结果，节省约 {} 字符",
+                    result.foldedCount(), result.savedChars());
+        }
+        return result;
+    }
+
+    /** /context 末尾的压缩状态说明。 */
+    private String compressionNote() {
+        if (!config.isContextCompressionEnabled()) {
+            return "历史压缩：已关闭（context.compression_enabled=false），上表即实际发送内容。";
+        }
+        if (lastCompression == null || !lastCompression.compressed()) {
+            return "历史压缩：未触发（估算低于窗口 " + config.getContextWindowTokens()
+                    + " 的 " + (int) (HistoryCompressor.TRIGGER_RATIO * 100) + "%）。";
+        }
+        return "历史压缩：最近一次请求折叠了 " + lastCompression.foldedCount() + " 条旧工具结果，"
+                + "节省约 " + lastCompression.savedChars() + " 字符；上表量的是未压缩的真实历史，"
+                + "实际发送的比它小。";
+    }
+
+    /**
+     * 把"请求前的估算"和"响应里的实测 prompt_tokens"配成一个对账样本，供 /context 显示偏差。
+     *
+     * <p>服务商不返回 usage，或返回的 prompt_tokens 为 0 时，不留样本——
+     * 用 0 去算偏差既没意义，还会除以 0。</p>
+     */
+    private void recordApiSample(int estimatedTokens, ChatCompletionResponse response) {
+        Usage usage = response == null ? null : response.getUsage();
+        if (usage != null && usage.getPromptTokens() > 0) {
+            lastApiSample = new ContextReport.ApiSample(
+                    estimatedTokens, usage.getPromptTokens(), usage.getCachedTokens());
+        }
+    }
+
+    /**
+     * 供 {@code /context} 命令调用：把 Agent 当前的真实数据交给纯函数 {@link ContextReport} 渲染。
+     * 本方法只读取状态，不修改历史、不调用模型。
+     */
+    private String renderContextReport() {
+        int toolCount = toolDefinitions == null ? 0 : toolDefinitions.size();
+        return ContextReport.render(lastComposedPrompt, toolCount, toolsJsonChars(),
+                conversationHistory, lastApiSample, compressionNote())
+                + "\n\n" + projectInstructions.snapshot().report();
+    }
+
+    /**
+     * tools 定义序列化成 JSON 后的字符数（带缓存）。
+     *
+     * <p>用的是和真实请求同一套序列化方法（{@link ModelClient#newStableObjectMapper()} +
+     * {@link ModelClient#buildToolsArray}），所以这里量出来的就是实际发给模型的大小。</p>
+     */
+    private int toolsJsonChars() {
+        if (toolDefinitions == null || toolDefinitions.isEmpty()) {
+            return 0;
+        }
+        if (cachedToolsJsonChars < 0) {
+            try {
+                ObjectMapper mapper = ModelClient.newStableObjectMapper();
+                cachedToolsJsonChars = mapper.writeValueAsString(
+                        ModelClient.buildToolsArray(mapper, toolDefinitions)).length();
+            } catch (JsonProcessingException e) {
+                // 序列化失败只影响诊断数字，不能影响对话：记日志并按 0 处理
+                logger.warn("统计 tools JSON 大小失败: {}", e.getMessage());
+                cachedToolsJsonChars = 0;
+            }
+        }
+        return cachedToolsJsonChars;
+    }
+
+    /**
+     * 回滚本回合产生的半截消息（P0-5 R2）。
+     *
+     * <p>为什么必须回滚：一次请求失败可能把历史停在「assistant 带 2 个 tool_calls，
+     * 但只有 1 条 tool 响应」的非法状态。这样的历史再发给服务端会被以 400 拒绝，
+     * 且该会话一旦被持久化，resume 后同样无法继续（附录 A5 同类问题）。</p>
+     *
+     * <p>回滚目标锚点包含 user 消息——用户的问题被保留，{@code /retry} 才能免去重新输入。
+     * 代价是本回合已取得的工具结果被丢弃，重试会重新获取；这是正确性与成本的取舍：
+     * 保留半截结果换取「可能非法的历史」不可接受。</p>
+     *
+     * <p>同步回退持久化水位：否则磁盘上已写入的消息与被截断的内存历史会分叉，
+     * 下一次增量持久化把这些消息再追加一遍造成重复。</p>
+     */
+    private void rollbackTurnTo(int mark) {
+        int size = conversationHistory.size();
+        if (size <= mark) {
+            return;
+        }
+        conversationHistory.subList(mark, size).clear();
+        if (persistedIndex > mark) {
+            persistedIndex = mark;
+        }
+        logger.warn("回合失败，已回滚 {} 条半截消息（历史长度 {} → {}）", size - mark, size, mark);
+    }
+
+    /**
+     * 向用户展示回合失败原因，并给出下一步动作（P0-5 R2）。
+     *
+     * <p>文案区分传输错误与其他异常：前者带状态码、是否已重试、以及异常自带的排查指引
+     * （api_key/base_url 等具体修复动作），后者只给一行摘要 + 引导查日志，
+     * 避免把整条堆栈刷到用户脸上（完整堆栈已在 WARN 日志）。</p>
+     */
+    private void reportTurnFailure(Exception e) {
+        System.out.println();
+        if (e instanceof LlmTransportException lte) {
+            String cause = lte.statusCode() > 0 ? "HTTP " + lte.statusCode() : "网络错误";
+            String retried = lte.isRetryable()
+                    ? "，已自动重试 " + LlmRetryPolicy.MAX_RETRIES + " 次仍失败" : "，此类错误不自动重试";
+            System.out.println(ConsoleUi.dimPrefix() + "本轮请求失败（" + cause + retried + "）");
+            System.out.println(e.getMessage());
+        } else {
+            System.out.println(ConsoleUi.dimPrefix() + "本轮处理出现异常：" + e.getClass().getSimpleName()
+                    + (e.getMessage() != null ? ": " + e.getMessage() : ""));
+        }
+        System.out.println(ConsoleUi.dimPrefix() + "会话仍然可用：输入 " + RETRY_COMMAND
+                + " 重发本轮，或直接提新问题。");
     }
 
     /**
@@ -463,172 +1155,66 @@ public class Agent {
             return toolRegistry.dispatch(name, args);
 
         } catch (JsonProcessingException e) {
-            throw new RuntimeException(e);
+            // 附录 A3：改造前此处直接 throw RuntimeException，模型给出一次畸形 JSON
+            // （轻量模型常见：参数串被截断、引号未闭合）就会让整个进程退出且会话丢失。
+            // 正确处置是把错误回传给模型——它看到「参数不是合法 JSON」通常会自行纠正重发。
+            String name = toolCall.getFunction() != null ? toolCall.getFunction().getName() : "?";
+            logger.warn("工具 {} 的 arguments 不是合法 JSON: {}", name, e.getOriginalMessage());
+            return ToolRegistry.toolError("工具 " + name + " 的 arguments 参数不是合法 JSON，无法解析。"
+                    + "请重新调用该工具并确保 arguments 是严格的 JSON 对象（注意引号闭合与转义）。");
         }
 
     }
 
     /**
-     * 构建「当前工作环境」上下文（Claude Code 式目录感知）。
+     * 构建系统提示词（P0-3：委托 {@link PromptComposer}）。
      *
-     * <p>JVM 的 {@code user.dir} 就是用户启动终端时所在的目录。把它连同顶层文件/目录
-     * 快照注入 system prompt，模型就能：
+     * <p>改造前这里是 90 行硬编码拼接：顺序靠代码行序、条件判据是配置项、
+     * 工具清单与 tools 数组重复、技能注入依赖 SkillMatcher 的历史文本匹配
+     *（新会话恒为空，附录 A19）。现在 Agent 只供给四项装配上下文：</p>
      * <ul>
-     *   <li>知道用户正在哪个项目里提问，主动用 search_files / read_file 探查而非凭空猜测；</li>
-     *   <li>正确生成相对路径（FileTool 的路径解析同样基于 user.dir）。</li>
+     *   <li>{@code CapabilityRegistry.from(toolRegistry)} —— 注册实况：requires 判定与
+     *       capabilities 渲染同源（R7，修复「配置开着但工具没注册上、指引照样注入」的 C-01）；</li>
+     *   <li>{@code WorkingDirSnapshot.capture()} —— 目录感知（原样迁移，期 4 叠加 R8 过滤）；</li>
+     *   <li>记忆快照 —— MemoryManager 预渲染文本，composer 作动态尾段；</li>
+     *   <li>技能清单 —— composer 经 SkillIndexBuilder 渲染紧凑索引（R9，正文按需 get）。</li>
      * </ul>
-     * 快照限制条数，避免大目录撑爆 prompt。</p>
-     */
-    private String buildWorkingDirectoryContext() {
-        Path cwd = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
-        StringBuilder sb = new StringBuilder();
-        sb.append("## 当前工作环境\n");
-        sb.append("- 工作目录（当前项目根目录）: ").append(cwd).append('\n');
-        sb.append("- 操作系统: ").append(System.getProperty("os.name")).append('\n');
-        sb.append("- 用户主目录: ").append(System.getProperty("user.home")).append('\n');
-        sb.append("- 文件工具中的相对路径均相对上述工作目录解析。")
-          .append("回答与本项目相关的问题前，优先用文件搜索/读取工具探查实际代码，禁止凭空猜测项目结构。\n");
-
-        List<String> entries = listTopLevelEntries(cwd, 50);
-        if (!entries.isEmpty()) {
-            sb.append("- 工作目录顶层内容:\n");
-            for (String entry : entries) {
-                sb.append("    ").append(entry).append('\n');
-            }
-        }
-        return sb.toString();
-    }
-
-    /**
-     * 列出目录顶层条目（目录名带 {@code /} 后缀），最多 {@code max} 条，超出时追加省略标记。
-     * 目录不可读（权限等）时返回空列表，绝不让快照失败影响对话启动。
-     */
-    private static List<String> listTopLevelEntries(Path dir, int max) {
-        List<String> names = new ArrayList<>();
-        try (var stream = Files.list(dir)) {
-            stream.sorted(Comparator.comparing(p -> p.getFileName().toString()))
-                    .forEach(p -> {
-                        if (names.size() <= max) {
-                            names.add(p.getFileName() + (Files.isDirectory(p) ? "/" : ""));
-                        }
-                    });
-        } catch (IOException e) {
-            logger.warn("无法列出工作目录 {}: {}", dir, e.getMessage());
-            return List.of();
-        }
-        if (names.size() > max) {
-            List<String> truncated = new ArrayList<>(names.subList(0, max));
-            truncated.add("...（共 " + names.size() + "+ 项，已截断，可用 search_files 进一步探查）");
-            return truncated;
-        }
-        return names;
-    }
-
-    /**
-     * 构建提示词
+     *
+     * <p>同一上下文多次调用结果逐字节相同（P0-4 R8 前缀稳定的基础）。</p>
      */
     private String buildSystemPrompt() {
-        StringBuilder prompt = new StringBuilder();
-
-        // 智能体提示词
-        prompt.append(Constants.DEFAULT_AGENT_IDENTITY).append("\n\n");
-
-        // 工作目录上下文（Claude Code 式：让模型感知用户启动终端时所在的项目目录）
-        prompt.append(buildWorkingDirectoryContext()).append("\n\n");
-
-        // 记忆提示词
-        prompt.append(Constants.MEMORY_GUIDANCE).append("\n\n");
-
-        // 工具强制使用提示词
-        prompt.append(Constants.TOOL_USE_ENFORCEMENT_GUIDANCE).append("\n\n");
-
-        // 终端输出格式规范（禁 Markdown、控换行——用户反馈的排版问题在提示词侧的约束）
-        prompt.append(Constants.TERMINAL_OUTPUT_GUIDANCE).append("\n\n");
-
-        // 执行规范
-        prompt.append(Constants.EXECUTION_DISCIPLINE_GUIDANCE).append("\n\n");
-
-        // 终端命令执行工具指引（run_command 已注册时才有意义，未启用则不注入避免误导模型）
-        if (config.isTerminalToolEnabled()) {
-            prompt.append(Constants.TERMINAL_TOOL_GUIDANCE).append("\n\n");
-        }
-
-        // 会话回忆
-        prompt.append(Constants.SESSION_SEARCH_GUIDANCE).append("\n\n");
-
-        // Skills 使用指引
-        prompt.append(Constants.SKILLS_GUIDANCE).append("\n\n");
-
-        // 网页搜索指引
-        prompt.append(Constants.WEB_SEARCH_GUIDANCE).append("\n\n");
-
-        // 知识库检索指引
-        prompt.append(Constants.RAG_GUIDANCE).append("\n\n");
-
-        // 平台提示（命令行模式）
-        String platformHint = Constants.PLATFORM_HINTS.get("cli");
-        if (platformHint != null) {
-            prompt.append(platformHint).append("\n\n");
-        }
-
-        // 记忆上下文
-        String memoryContext = memoryManager.getSystemPromptSnapshot();
-        if (!memoryContext.isEmpty()) {
-            prompt.append(memoryContext).append("\n\n");
-        }
-
-        // 可用工具列表
-        prompt.append("## Available Tools\n\n");
-        for (Map<String, Object> tool : toolDefinitions) {
-            Map<String, Object> function = (Map<String, Object>) tool.get("function");
-            if (function != null) {
-                prompt.append("- ").append(function.get("name"));
-                if (function.containsKey("description")) {
-                    String desc = (String) function.get("description");
-                    // 修剪长描述
-                    if (desc.length() > 200) {
-                        desc = desc.substring(0, 200) + "...";
-                    }
-                    prompt.append(": ").append(desc);
-                }
-                prompt.append("\n");
-            }
-        }
-
-        // 添加匹配到的可用技能
-        String skillContext = buildSkillContext();
-        if (!skillContext.isEmpty()) {
-            prompt.append("\n").append(skillContext).append("\n");
-        }
-
-        return prompt.toString();
+        ComposedPrompt composed = composeSystemPrompt(toolRegistry, promptComposer, projectInstructions.snapshot());
+        // 留存装配结果（含逐段明细），/context 要用它列出每一段各占多少
+        this.lastComposedPrompt = composed;
+        return composed.text();
     }
 
-    private String buildSkillContext() {
-        String lastUserInput = "";
-        Set<String> recentTags = new HashSet<>();
-        for (int i = conversationHistory.size() - 1; i >= 0; i--) {
-            ModelMessage msg = conversationHistory.get(i);
-            if ("user".equals(msg.getRole()) && msg.getContent() != null) {
-                if (lastUserInput.isEmpty()) {
-                    lastUserInput = msg.getContent();
-                }
-                if (msg.getContent() != null) {
-                    for (String word : msg.getContent().toLowerCase().split("\\s+")) {
-                        if (word.length() >= 3) {
-                            recentTags.add(word);
-                        }
-                    }
-                }
-            }
-        }
+    /**
+     * 装配系统提示词：对话与装配回归测试共用同一实现。
+     *
+     * <p>输入四项：注册实况（requires 判定与能力清单）、目录快照、记忆快照、技能清单。
+     * 同一环境下多次调用，结果逐字节相同（前缀缓存稳定性的基础）。</p>
+     *
+     * @param registry 工具注册表
+     * @param composer 提示词装配器
+     * @return 装配结果（含逐段明细）
+     */
+    public static ComposedPrompt composeSystemPrompt(ToolRegistry registry, PromptComposer composer) {
+        return composeSystemPrompt(registry, composer, com.cyk.prompt.ProjectInstructions.EMPTY);
+    }
 
-        if (lastUserInput.isEmpty()) {
-            return "";
-        }
-
-        List<SkillMatcher.Match> matches = skillMatcher.match(lastUserInput, recentTags);
-        return skillMatcher.buildSkillContext(matches);
+    private static ComposedPrompt composeSystemPrompt(ToolRegistry registry, PromptComposer composer,
+                                                       com.cyk.prompt.ProjectInstructions instructions) {
+        CapabilityRegistry capabilities = CapabilityRegistry.from(registry);
+        ComposedPrompt composed = composer.compose(new PromptContext(
+                capabilities,
+                WorkingDirSnapshot.capture(),
+                MemoryManager.getInstance().getSystemPromptSnapshot(),
+                SkillManager.getInstance().listAll(), instructions));
+        // R6 一致性自检：提示词中出现「疑似工具名但未注册」→ WARN（不阻断会话）。
+        // 只扫静态创作段（记忆尾段属用户数据，见 checker 说明）。
+        PromptConsistencyChecker.warnIfInconsistent(composed, capabilities);
+        return composed;
     }
 
 }

@@ -26,11 +26,23 @@ public class SessionManager {
     
     private final Path sessionsDir;
     private final Map<String, Session> activeSessions;
-    
+
+    /** 会话消息上限（P0-5 R6）：统一在此注入，避免每个 Session 各自硬编码。 */
+    private final int maxMessages;
+
     public SessionManager(Path dataDir) {
+        this(dataDir, Session.DEFAULT_MAX_MESSAGES);
+    }
+
+    /**
+     * @param dataDir     数据目录（{@code HERMES_HOME}）
+     * @param maxMessages 会话保留的消息上限；非法值回退到默认
+     */
+    public SessionManager(Path dataDir, int maxMessages) {
         this.sessionsDir = dataDir.resolve("memory").resolve("sessions");
         this.activeSessions = new ConcurrentHashMap<>();
-        
+        this.maxMessages = maxMessages >= 2 ? maxMessages : Session.DEFAULT_MAX_MESSAGES;
+
         try {
             Files.createDirectories(sessionsDir);
         } catch (IOException e) {
@@ -59,15 +71,18 @@ public class SessionManager {
     private Session loadSession(String sessionId) throws IOException {
         Path sessionFile = sessionsDir.resolve(sessionId + ".json");
 
+        Session session;
         if (Files.exists(sessionFile)) {
             //若磁盘存在则返回
             ObjectNode json = (ObjectNode) mapper.readTree(sessionFile.toFile());
             //将json转为session
-            Session session = Session.fromJson(sessionId, json);
-            return session;
+            session = Session.fromJson(sessionId, json);
+        } else {
+            session = new Session(sessionId);
         }
-
-        return new Session(sessionId);
+        // 上限统一由管理器注入（载入的旧会话也可能需要按新上限重新裁剪）
+        session.setMaxMessages(maxMessages);
+        return session;
     }
 
 
@@ -83,6 +98,10 @@ public class SessionManager {
      * 这也是原子写工具的额外好处：先构造完整内容再落盘，避免「写到一半发现序列化错误」。
      */
     public void saveSession(Session session) throws IOException {
+        if (session.messages.stream().noneMatch(message -> message != null && message.role() != null
+                && !"system".equals(message.role()))) {
+            return;
+        }
         Path sessionFile = sessionsDir.resolve(session.id + ".json");
         // 先序列化为完整 JSON 字符串（含缩进便于人工排查），再原子写入
         String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(session.toJson());
@@ -101,6 +120,33 @@ public class SessionManager {
         }
         return Files.exists(sessionsDir.resolve(sessionId + ".json"));
     }
+
+    /** Strict user-selected resume does not turn corrupt or escaped paths into new empty sessions. */
+    public Session readExisting(String id) throws IOException {
+        if (id == null || !id.matches("[A-Za-z0-9][A-Za-z0-9_-]{0,127}")) {
+            throw new IOException("会话ID无效, 请使用 /sessions 列出的ID。");
+        }
+        Path file = sessionsDir.resolve(id + ".json");
+        if (!Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(file) || !file.toRealPath().getParent().equals(sessionsDir.toRealPath())) {
+            throw new IOException("会话不存在或路径不安全: " + id);
+        }
+        try {
+            var node = mapper.readTree(file.toFile());
+            if (!(node instanceof ObjectNode json) || !json.path("messages").isArray()) {
+                throw new IOException("会话文件损坏: " + id);
+            }
+            Session session = Session.fromJson(id, json);
+            if (!session.hasUserInput()) throw new IOException("会话没有已提交的用户消息: " + id);
+            session.setMaxMessages(maxMessages);
+            return session;
+        } catch (RuntimeException e) {
+            throw new IOException("会话文件损坏: " + id);
+        }
+    }
+
+    /** Install a strictly read snapshot only when a conversation switch commits. */
+    public void useLoadedSession(Session session) { activeSessions.put(session.id, session); }
 
     /**
      * 列出全部已持久化会话，按 lastActivity 降序（最近的在前）。
@@ -123,7 +169,10 @@ public class SessionManager {
                 String id = file.getFileName().toString().replaceFirst("\\.json$", "");
                 try {
                     ObjectNode json = (ObjectNode) mapper.readTree(file.toFile());
-                    result.add(Session.fromJson(id, json));
+                    Session session = Session.fromJson(id, json);
+                    if (session.hasUserInput()) {
+                        result.add(session);
+                    }
                 } catch (Exception e) {
                     logger.warn("跳过损坏的会话文件 {}: {}", file.getFileName(), e.getMessage());
                 }

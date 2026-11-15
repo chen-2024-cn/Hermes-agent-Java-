@@ -1,0 +1,60 @@
+# =============================================================================
+# Jhermes 系统提示词装配清单（JH-SPEC-001 P0-3 R1）
+#
+# 规则说明：
+# - 本文件中的顺序即提示词前缀顺序，不靠文件名排序推断（P0-4 R8 前缀缓存依赖：
+#   同配置下段序跨进程稳定）。
+# - requires 是「注册表实况」判据（由 CapabilityRegistry 判定），而非配置文件判据
+#   （修复 C-01：配置与实况可脱节，如 rag.enabled=true 但数据库连不上）。
+#     toolsets: 列出的工具集都有已注册工具时注入（AND 语义）
+#     tools:    列出的工具名都真实注册时注入（AND 语义）
+#     skills:   true 表示本机至少有 1 个技能时才注入
+#   缺省 requires = 恒注入。
+# - 用户级覆盖（可选）：在 ~/.jhermes/prompts/ 放置同名段文件或 manifest.yaml
+#   即可覆盖内置版本；用户文件损坏/不可读 → 自动回退 classpath 内置版并 WARN，
+#   绝不阻断启动（与 security/rules.yaml 覆盖同一模式）。
+#   该目录已纳入 SensitivePathGuard 写保护：模型的任何工具都无法改写它。
+# - 段文件中的 {{var}} 为模板变量，由 PromptComposer 在装配时替换。
+#
+# 不迁移的旧段（P0-3 报备决策）：
+# - SESSION_SEARCH_GUIDANCE：能力不存在（附录 R2），删除。
+# - PLATFORM_HINTS 其余 7 平台：CLI 永不使用（决策 D-1），删除。
+# - 「## Available Tools」文本清单：与 tools 数组纯重复，由 capabilities.md 取代。
+# =============================================================================
+version: 1
+segments:
+  - id: identity          # 智能体身份（恒注入）
+    file: identity.md
+  - id: working-dir       # 当前工作环境快照（模板：cwd/os/home/entries）
+    file: working-dir.md
+  - id: execution         # 执行规范（合并去重旧 TOOL_USE_ENFORCEMENT + EXECUTION_DISCIPLINE）
+    file: execution.md
+  - id: terminal-output   # 终端纯文本输出规范（合并旧 TERMINAL_OUTPUT + PLATFORM_HINTS[cli]）
+    file: terminal-output.md
+  - id: memory            # 跨会话记忆指引
+    file: memory.md
+    requires:
+      toolsets: [memory]
+  - id: terminal-tool     # run_command 指引（P0-2 R12 版；判据从配置改为注册实况）
+    file: terminal-tool.md
+    requires:
+      tools: [run_command]
+  - id: web-search        # 网页搜索指引
+    file: web-search.md
+    requires:
+      toolsets: [web]
+  - id: rag               # 知识库指引：未注册时整段不注入（旧版恒注入是 C-01 缺陷）
+    file: rag.md
+    requires:
+      toolsets: [rag]
+  - id: skills            # 技能沉淀指引（重写：旧版误教模型用记忆工具存技能，改为 skill_manage）
+    file: skills.md
+    requires:
+      tools: [skill_manage]
+  - id: capabilities      # 能力权威清单 + R5 硬约束（模板：capabilities，注册表渲染）
+    file: capabilities.md
+  - id: skills-index      # 紧凑技能索引（模板：skills_index；R9 正文按需读，不进前缀）
+    file: skills-index.md
+    requires:
+      tools: [skill_manage]
+      skills: true

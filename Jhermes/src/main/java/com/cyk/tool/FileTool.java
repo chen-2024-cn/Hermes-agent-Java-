@@ -1,6 +1,14 @@
 package com.cyk.tool;
 
 import com.cyk.bean.ToolEntry;
+import com.cyk.constant.Constants;
+import com.cyk.security.CommandLevel;
+import com.cyk.security.ConfirmationProvider;
+import com.cyk.security.PolicyDecision;
+import com.cyk.security.SecurityContext;
+import com.cyk.security.WorkspacePathAnalyzer;
+import com.cyk.ui.Ui;
+import com.cyk.util.ConsoleUi;
 import com.cyk.util.SensitivePathGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,6 +28,37 @@ public class FileTool {
     private static final int MAX_RESULTS = 100;
 
     /**
+     * {@code read_file} 未传 {@code limit} 时的默认读取行数（JH-SPEC-001 P0-5 R9）。
+     *
+     * <p>取值依据：2000 行足以一次读完绝大多数源码/配置文件，模型不再需要反复翻页；
+     * 即使读满，内容也会在 {@code ToolRegistry.dispatch} 被截断到 12,000 字符，
+     * 故不会因缺省值变大而撑爆上下文。</p>
+     */
+    static final int DEFAULT_READ_LIMIT = 2000;
+
+    /**
+     * 容错读取整型参数。
+     *
+     * <p>模型偶尔把数字传成字符串（{@code "limit": "10"}），旧的 {@code (Number)} 强转
+     * 会抛 ClassCastException；现在 dispatch 有 Throwable 边界不会崩进程，
+     * 但整次工具调用就白费了。在入口做容错解析，失败回退默认值。</p>
+     */
+    private static int readIntArg(Map<String, Object> args, String key, int defaultValue) {
+        Object value = args.get(key);
+        if (value instanceof Number n) {
+            return n.intValue();
+        }
+        if (value instanceof String s && !s.isBlank()) {
+            try {
+                return Integer.parseInt(s.trim());
+            } catch (NumberFormatException e) {
+                logger.warn("参数 {} 无法解析为整数：'{}'，已回退默认值 {}", key, s, defaultValue);
+            }
+        }
+        return defaultValue;
+    }
+
+    /**
      * 敏感凭据路径拦截（与 {@link TerminalTool} 共享 {@link SensitivePathGuard} 同一份黑名单）。
      *
      * <p>为什么文件工具也要拦：{@code run_command} 拦住了 {@code Get-Content ~/.ssh/id_rsa}，
@@ -35,12 +74,16 @@ public class FileTool {
      */
     private static String checkSensitive(Path path) {
         String marker = SensitivePathGuard.checkPath(path);
+        if (marker == null && Files.exists(path)) {
+            try { marker = SensitivePathGuard.checkPath(path.toRealPath()); }
+            catch (IOException e) { return ToolRegistry.toolError("无法确认文件真实路径, 已拒绝访问。"); }
+        }
         if (marker == null) {
             return null;
         }
         logger.warn("已拦截敏感路径访问: {} （标记: {}）", path, marker);
         return ToolRegistry.toolError(
-                "路径被安全策略拦截：触及敏感凭据位置（" + marker + "）。"
+                "路径被安全策略拦截：触及敏感凭据或受保护位置（" + marker + "）。"
                         + "用户的密钥/token 绝不允许被读入对话上下文，也不允许被本工具改写。"
                         + "如确需相关配置信息，请告知用户自行查看；如需改配置，请让用户手动编辑。");
     }
@@ -56,8 +99,12 @@ public class FileTool {
             if (pathStr == null || pathStr.isBlank()) {
                 return ToolRegistry.toolError("Path parameter is required");
             }
-            int offset = args.containsKey("offset") ? ((Number) args.get("offset")).intValue() : 1;
-            int limit = args.containsKey("limit") ? ((Number) args.get("limit")).intValue() : 1;
+            int offset = readIntArg(args, "offset", 1);
+            // R9（附录 A7）：缺省 limit 由 1 行改为 DEFAULT_READ_LIMIT 行。
+            // 旧默认值让模型不传 limit 时只能拿到文件的第一行，不得不反复试探性调用
+            // （每次都是一整轮 LLM 往返 + 整份历史重发）。新默认值覆盖绝大多数源码文件，
+            // 且读出内容仍受 ToolRegistry 的 12,000 字符护栏二次截断，不会撑爆上下文。
+            int limit = readIntArg(args, "limit", DEFAULT_READ_LIMIT);
 
             //第二步：路径规范化
             //Paths.get(pathStr)：把字符串变成 Path 对象
@@ -88,8 +135,12 @@ public class FileTool {
 
             //第六步：截取需要的行
             //处理起始结束位置
-            int start = Math.max(0, offset - 1);//防止 offset = 0 时出现负数下标
-            int end = Math.min(lines.size(), start + limit);
+            // offset 可能超过文件实际行数（模型常猜一个很大的 offset），
+            // 不钳制会让 subList 抛 IllegalArgumentException: fromIndex > toIndex，
+            // 旧实现此处会直接把整次工具调用变成异常（现在被 dispatch 边界兜住，
+            // 但仍应返回「空内容 + 真实行数」让模型自行纠正）。
+            int start = Math.min(Math.max(0, offset - 1), lines.size());
+            int end = Math.min(lines.size(), start + Math.max(0, limit));
 
             List<String> result = lines.subList(start, end);
             String content = String.join("\n", result);
@@ -98,8 +149,12 @@ public class FileTool {
             return ToolRegistry.toolResult(Map.of(
                     "content", content,
                     "path", path,
-                    "total_lines", result.size(),
+                    // R9（附录 A7）：total_lines 必须是文件真实总行数，而非本次返回的行数。
+                    // 旧实现返回 result.size()，模型无法判断还剩多少内容、该把 offset
+                    // 设成多少，只能反复翻页试探。
+                    "total_lines", lines.size(),
                     "offset", start + 1,
+                    "limit", result.size(),
                     "truncated", end < lines.size()// 是否被截断（true=后面还有内容没读完）
             ));
 
@@ -133,6 +188,27 @@ public class FileTool {
             if (Files.isDirectory(path)) {
                 return ToolRegistry.toolError("路径是目录而非文件，请指定完整文件路径（例如 D:\\English\\data.txt）");
             }
+
+            //第二步之二：写入确认门（P0-2 R9/R15）
+            //  R15：写入技能目录需确认——防模型落地脚本后于下次启动被注册为工具
+            //  R9：写入越出启动工作区需确认（尽力检测，非隔离）
+            //  工作区内的普通写入不打扰用户（write_file 是核心能力，逐次确认会不可用）
+            Path skillsDir = Constants.getHermesHome().resolve("skills");
+            boolean toSkills = path.startsWith(skillsDir);
+            boolean outsideWorkspace = WorkspacePathAnalyzer.escapesWorkspace(
+                    pathStr, Paths.get(System.getProperty("user.dir")));
+            if (toSkills || outsideWorkspace) {
+                String why = toSkills ? "写入技能目录（下次启动会被注册为工具）" : "写入启动工作区之外的目录";
+                String denial = confirmWriteGate(path, why,
+                        com.cyk.security.ApprovalContext.forFile(args, path, append, Files.exists(path)));
+                if (denial != null) {
+                    return denial;
+                }
+            }
+
+            //第二步之三：回显写入目标（P0-2 R13，与 [run #N] 同风格，便于用户发现异常写入）
+            Ui.out().println(ConsoleUi.dimPrefix() + "[write] " + path);
+
             Path parent = path.getParent();
             if (parent != null) Files.createDirectories(parent);
 
@@ -151,6 +227,35 @@ public class FileTool {
         } catch (Exception e) {
             return ToolRegistry.toolError("Write failed: " + e.getMessage());
         }
+    }
+
+    /**
+     * 文件写入的确认门（R9/R15）：构造 WRITE 档决策，过确认闸门。
+     *
+     * <p>审计模式（{@code --policy=audit}）下不打断；{@code --yolo} 对 WRITE 生效同样跳过。
+     * 拒绝时返回给模型的 error JSON，不实际写盘。</p>
+     *
+     * @return null 表示放行；非 null 为拒绝时返回的错误结果
+     */
+    private static String confirmWriteGate(Path path, String why, com.cyk.security.ApprovalContext context) {
+        PolicyDecision decision = new PolicyDecision(
+                CommandLevel.WRITE, List.of("file-write-boundary"), why,
+                List.of(), "write_file " + path,
+                "write_file|null|" + why, false);
+        if (SecurityContext.isAuditOnly()) {
+            Ui.out().println(ConsoleUi.dimPrefix() + "[审计模式] 写入不拦截：" + why + " → " + path);
+            return null;
+        }
+        if (SecurityContext.isYolo()) {
+            return null;// --yolo 跳过 WRITE 确认（不跳 DANGEROUS，但文件写入按 WRITE 处理）
+        }
+        ConfirmationProvider.Approval approval = SecurityContext.confirmation().request(decision, context);
+        if (approval != ConfirmationProvider.Approval.ALLOW) {
+            logger.warn("用户拒绝写入: {} （{}）", path, why);
+            return ToolRegistry.toolError("用户拒绝写入文件：" + why + "（" + path + "）。"
+                    + "请告知用户写入意图与位置，如确需写入由其确认。");
+        }
+        return null;
     }
 
     /**
@@ -181,7 +286,8 @@ public class FileTool {
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                     String fileName = file.getFileName().toString();
-                    if (FileSystems.getDefault().getPathMatcher("glob:" + pattern).matches(Path.of(fileName))) {
+                    if (!SensitivePathGuard.isSensitivePath(file)
+                            && FileSystems.getDefault().getPathMatcher("glob:" + pattern).matches(Path.of(fileName))) {
                         results.add(file.toString());
                         if (results.size() >= MAX_RESULTS) return FileVisitResult.TERMINATE;
                     }
@@ -255,6 +361,7 @@ public class FileTool {
 
     private static void grepFile(Path file, java.util.regex.Pattern pattern, List<Map<String, Object>> results) {
         try {
+            if (SensitivePathGuard.isSensitivePath(file) || SensitivePathGuard.isSensitivePath(file.toRealPath())) return;
             List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
             for (int i = 0; i < lines.size(); i++) {
                 if (pattern.matcher(lines.get(i)).find()) {
@@ -316,13 +423,15 @@ public class FileTool {
 
         registry.register(new ToolEntry.Builder()
                 .name("write_file").toolset("file_operations")
-                .schema(Map.of("description", "Write content to a file",
+                .schema(Map.of("description", "Write file content; explain purpose and expected result for approval",
                         "parameters", Map.of(
                                 "type", "object",
                                 "properties", Map.of(
                                         "path", Map.of("type", "string", "description", "File path"),
                                         "content", Map.of("type", "string", "description", "Content to write"),
-                                        "append", Map.of("type", "boolean", "description", "Append instead of overwrite")),
+                                        "append", Map.of("type", "boolean", "description", "Append instead of overwrite"),
+                                        "purpose", Map.of("type", "string", "description", "一句话说明写入目的"),
+                                        "expected_result", Map.of("type", "string", "description", "预期写入结果，不是已完成结果")),
                                 "required", List.of("path", "content"))))
                 .handler(FileTool::writeFile)
                 .build());

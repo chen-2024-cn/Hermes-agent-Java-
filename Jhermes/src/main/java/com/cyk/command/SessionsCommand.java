@@ -19,6 +19,7 @@ import java.util.concurrent.Callable;
  */
 @CommandLine.Command(name = "sessions", description = "列出历史会话，可用于 resume 恢复")
 public class SessionsCommand implements Callable<Integer> {
+    @CommandLine.Mixin private CommandHelp help;
 
     private static final DateTimeFormatter TIME_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault());
@@ -28,19 +29,25 @@ public class SessionsCommand implements Callable<Integer> {
         SessionManager manager = new SessionManager(Constants.getHermesHome());
         List<Session> sessions = manager.listSessions();
 
+        render(sessions, new java.io.PrintWriter(System.out, true), Constants.CLI_NAME + " resume <会话ID>");
+        return 0;
+    }
+
+    public static void render(List<Session> sessions, java.io.PrintWriter out, String resumeHint) {
         if (sessions.isEmpty()) {
-            System.out.println("暂无历史会话。运行 `" + Constants.CLI_NAME
+            out.println("暂无历史会话。运行 `" + Constants.CLI_NAME
                     + " chat` 开始对话后，会话会自动记录。");
-            return 0;
+            out.flush();
+            return;
         }
 
-        System.out.printf("共 %d 个会话（按最近活跃排序）：%n%n", sessions.size());
-        System.out.printf("%-3s %-16s %-20s %-6s %s%n", "#", "会话ID", "最近活跃", "消息数", "最近一条用户消息");
-        System.out.println("-".repeat(90));
+        out.printf("共 %d 个会话（按最近活跃排序）：%n%n", sessions.size());
+        out.printf("%-3s %-16s %-20s %-6s %s%n", "#", "会话ID", "最近活跃", "消息数", "最近一条用户消息");
+        out.println("-".repeat(90));
 
         int index = 1;
         for (Session s : sessions) {
-            System.out.printf("%-3d %-16s %-20s %-6d %s%n",
+            out.printf("%-3d %-16s %-20s %-6s %s%n",
                     index++,
                     s.id,
                     TIME_FMT.format(Instant.ofEpochMilli(s.lastActivity)),
@@ -48,9 +55,9 @@ public class SessionsCommand implements Callable<Integer> {
                     lastUserMessagePreview(s));
         }
 
-        System.out.println();
-        System.out.println("恢复某个会话：" + Constants.CLI_NAME + " resume <会话ID>");
-        return 0;
+        out.println();
+        out.println("恢复某个会话：" + resumeHint);
+        out.flush();
     }
 
     /**
@@ -60,7 +67,7 @@ public class SessionsCommand implements Callable<Integer> {
         for (int i = session.messages.size() - 1; i >= 0; i--) {
             Message msg = session.messages.get(i);
             if ("user".equals(msg.role()) && msg.content() != null) {
-                String content = msg.content().replaceAll("\\s+", " ").trim();
+                String content = msg.content().replaceAll("[\\p{Cc}\\p{Cf}]", " ").replaceAll("\\s+", " ").trim();
                 return content.length() > 40 ? content.substring(0, 40) + "…" : content;
             }
         }

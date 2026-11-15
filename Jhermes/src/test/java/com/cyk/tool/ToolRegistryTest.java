@@ -87,4 +87,53 @@ class ToolRegistryTest {
         String capped = ToolRegistry.capResultSize(null, null);
         assertThat(capped).contains("error");
     }
+
+    // =========================================================================
+    // 按工具集分组 API（P0-3：CapabilityRegistry 的数据源）
+    // =========================================================================
+
+    /** 注册一个指定工具集的测试工具 */
+    private void registerToolInSet(String name, String toolset) {
+        registry.register(new ToolEntry.Builder()
+                .name(name)
+                .toolset(toolset)
+                .schema(Map.of("description", name,
+                        "parameters", Map.of("type", "object", "properties", Map.of())))
+                .handler(args -> "ok")
+                .build());
+    }
+
+    @Test
+    void entriesByToolsetShouldGroupAndSortDeterministically() {
+        registerToolInSet("zebra_tool", "alpha_set");
+        registerToolInSet("apple_tool", "alpha_set");
+        registerToolInSet("single_tool", "beta_set");
+
+        var grouped = registry.entriesByToolset();
+
+        // 外层工具集字典序：alpha_set < beta_set（与注册顺序无关）
+        assertThat(grouped.keySet()).containsExactly("alpha_set", "beta_set");
+        // 内层工具名字典序：zebra 先注册但 apple 排前——前缀稳定性依赖此排序（P0-4 R8）
+        assertThat(grouped.get("alpha_set").stream().map(ToolEntry::getName).toList())
+                .containsExactly("apple_tool", "zebra_tool");
+        assertThat(grouped.get("beta_set")).hasSize(1);
+    }
+
+    @Test
+    void entriesByToolsetShouldReturnImmutableStructure() {
+        registerToolInSet("some_tool", "some_set");
+
+        var grouped = registry.entriesByToolset();
+
+        // 消费方（CapabilityRegistry / /help 渲染）误改不得反向污染注册表内部状态
+        assertThatThrownBy(() -> grouped.put("hacked", java.util.List.of()))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThatThrownBy(() -> grouped.get("some_set").clear())
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void entriesByToolsetOnEmptyRegistryShouldBeEmptyMap() {
+        assertThat(registry.entriesByToolset()).isEmpty();
+    }
 }

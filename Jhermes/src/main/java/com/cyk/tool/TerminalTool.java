@@ -1,6 +1,7 @@
 package com.cyk.tool;
 
 import com.cyk.bean.ToolEntry;
+import com.cyk.ui.Ui;
 import com.cyk.util.SensitivePathGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -104,6 +105,8 @@ public class TerminalTool {
         COMMAND_COUNTS.clear();
     }
 
+    public static void resetConversationCounts() { COMMAND_COUNTS.clear(); }
+
     /**
      * 重复护栏的命令归一化：小写化 + 连续空白压缩为单空格。
      *
@@ -130,10 +133,15 @@ public class TerminalTool {
     private record DangerPattern(java.util.regex.Pattern pattern, String reason) {
     }
 
-    private static final List<DangerPattern> DANGEROUS_PATTERNS = List.of(
-        // rm -rf 后跟 Unix 绝对路径（/、/home/...、/var 等）或家目录 ~、或裸 . 与 ./：
-        // 全部拦截。相对子目录（rm -rf ./target、rm -rf build）是正常的清理操作，放行。
-        // 注意：正则曾漏掉「/后跟多级路径」场景（/home/user、/var），单测修复（2026-09-28）。
+    /**
+     * 迁移前的 6 条灾难命令正则（历史参考 + AC2 回归对照）。
+     *
+     * <p>P0-2 R4 已把拦截职责迁移到 {@link com.cyk.security.CommandPolicy} 的 BLOCKED 档
+     * （结构化规则 + 分段器，修复了整串正则的误杀与漏过）。本列表<b>不再参与 runCommand
+     * 的处置</b>，仅保留供 {@code CommandPolicyBaselineTest} 计算「旧引擎拦截集」，
+     * 据此断言新引擎仍全部拦截（AC2：回归保障）。删除它会让 B7 基线证据失去对照物。</p>
+     */
+    static final List<DangerPattern> LEGACY_DANGEROUS_PATTERNS = List.of(
         new DangerPattern(java.util.regex.Pattern.compile(
             "\\brm\\s+(-[a-z]*[rf][a-z]*\\s+)+(/[^\\s\"']*|~[^\\s\"']*|\\.(/)?)([\\s\"']|$)"),
             "递归强制删除根目录/家目录"),
@@ -155,16 +163,38 @@ public class TerminalTool {
     );
 
     /**
-     * 判断命令是否命中危险黑名单。
+     * 判断命令是否被硬拦截（BLOCKED）。
      *
-     * <p>包级可见：供单元测试直接验证拦截规则，无需真实执行命令。</p>
+     * <p>P0-2 R4：委托给 {@link com.cyk.security.CommandPolicy} 的结构化分级，
+     * 而非旧的整串正则——分段器把引号内文本当数据（修复 {@code grep -r "rm -rf /"}
+     * 误杀），并对 PowerShell 等价灾难命令、嵌套 shell、绕过手法都能识别。</p>
+     *
+     * <p>包级可见：供单元测试直接验证拦截规则，无需真实执行命令。
+     * 保留原方法名与返回契约（命中返回原因、未命中 null），既有测试无需改动。</p>
      *
      * @param command 原始命令串
-     * @return 命中原因；未命中返回 null
+     * @return 命中的拦截理由；未命中（含仅需确认的 WRITE/DANGEROUS）返回 null
      */
     static String checkDangerous(String command) {
+        if (command == null || command.isBlank()) {
+            return null;
+        }
+        com.cyk.security.PolicyDecision decision =
+                com.cyk.security.SecurityContext.policy().evaluate(command);
+        return decision.isBlocked() ? decision.reason() : null;
+    }
+
+    /**
+     * 计算旧引擎（{@link #LEGACY_DANGEROUS_PATTERNS} 6 条正则）对命令的拦截结果。
+     *
+     * <p>仅供 {@code CommandPolicyBaselineTest} 做「旧引擎拦截集 ⊆ 新引擎拦截集」的
+     * AC2 回归对照；处置路径不再使用它。包级可见。</p>
+     *
+     * @return 旧正则命中的理由；未命中 null
+     */
+    static String legacyCheckDangerous(String command) {
         String normalized = command.toLowerCase(Locale.ROOT);
-        for (DangerPattern dp : DANGEROUS_PATTERNS) {
+        for (DangerPattern dp : LEGACY_DANGEROUS_PATTERNS) {
             if (dp.pattern().matcher(normalized).find()) {
                 return dp.reason();
             }
@@ -172,7 +202,7 @@ public class TerminalTool {
         return null;
     }
 
-    /** 兼容旧命名：是否危险命令（true=拦截）。 */
+    /** 兼容旧命名：是否被硬拦截（true=BLOCKED）。 */
     static boolean isDangerous(String command) {
         return checkDangerous(command) != null;
     }
@@ -215,42 +245,7 @@ public class TerminalTool {
             timeout = Math.max(1, Math.min(n.intValue(), MAX_TIMEOUT_SECONDS));
         }
 
-        // 第二步：危险命令拦截（黑名单）
-        String danger = checkDangerous(command);
-        if (danger != null) {
-            logger.warn("已拦截危险命令: {} （原因: {}）", command, danger);
-            return ToolRegistry.toolError(
-                "命令被安全策略拦截：" + danger
-                + "。此类不可逆操作不允许自动执行，请明确告知用户风险并由用户手动操作。");
-        }
-
-        // 第二步之一：敏感凭据文件访问拦截（防密钥泄露进对话历史被持久化）
-        String sensitive = checkSensitive(command);
-        if (sensitive != null) {
-            logger.warn("已拦截敏感路径访问: {} （标记: {}）", command, sensitive);
-            return ToolRegistry.toolError(
-                "命令被安全策略拦截：触及敏感凭据路径（" + sensitive
-                + "）。用户的密钥/token 绝不允许被读入对话上下文。"
-                + "如确需相关配置信息，请告知用户自行查看。");
-        }
-
-        // 第二步之二：重复命令护栏——同一命令第 3 次起拒绝，打断“搜不到就换个姿势再全盘扫”的死循环。
-        // 计数在拦截之前就累加：被拒的命令也计入，否则模型可以用同一条命令无限重试。
-        if (COMMAND_COUNTS.size() >= COMMAND_COUNTS_LIMIT) {
-            COMMAND_COUNTS.clear();
-        }
-        String commandKey = normalizeForRepeatGuard(command);
-        int repeats = COMMAND_COUNTS.merge(commandKey, 1, Integer::sum);
-        if (repeats > MAX_SAME_COMMAND_REPEATS) {
-            logger.warn("拒绝重复命令（第 {} 次）: {}", repeats, command);
-            return ToolRegistry.toolError(
-                "这条命令在本会话已执行过 " + MAX_SAME_COMMAND_REPEATS + " 次，结果不会变，已拒绝重复执行。"
-                + "不要再用微调后的同类搜索命令重试。请换策略："
-                + "①目标应用自带的能力优先（如知识库操作用 rag_list/rag_delete，文件查找用 search_files）；"
-                + "②直接问用户具体路径/凭据位置；③如实告知用户用现有工具无法完成。");
-        }
-
-        // 第三步：工作目录解析（默认当前进程目录，即用户启动 Jhermes 的位置）
+        // 第二步：先解析执行目录（策略处置展示、审计 cwd 都需要；也在越界判定里用到）
         Path workDir;
         try {
             String workDirArg = asString(args.get("workdir"));
@@ -263,15 +258,100 @@ public class TerminalTool {
         } catch (Exception e) {
             return ToolRegistry.toolError("工作目录无效: " + e.getMessage());
         }
+        String cwdStr = workDir.toString();
 
-        // 第四步：终端回显——让用户实时看到模型正在执行什么命令（透明性原则）
+        // 第三步：敏感凭据路径拦截（纵深防御第一层，防密钥进对话历史被持久化）
+        String sensitive = checkSensitive(command);
+        if (sensitive != null) {
+            logger.warn("已拦截敏感路径访问: {} （标记: {}）", command, sensitive);
+            audit(command, List.of(command), com.cyk.security.CommandLevel.BLOCKED,
+                List.of("sensitive-path:" + sensitive),
+                com.cyk.security.AuditLogger.Decision.BLOCKED_SENSITIVE, "denied", null, null, cwdStr);
+            return ToolRegistry.toolError(
+                "命令被安全策略拦截：触及敏感凭据路径（" + sensitive
+                + "）。用户的密钥/token 绝不允许被读入对话上下文，也不允许改写策略/审计文件。"
+                + "如确需相关配置信息，请告知用户自行查看。");
+        }
+
+        // 第四步：命令策略分级（结构化规则 + 引号感知分段，取代旧整串正则；P0-2 R1/R4）
+        com.cyk.security.PolicyDecision decision =
+                com.cyk.security.SecurityContext.policy().evaluate(command);
+
+        // 第四步之一：BLOCKED —— 系统级灾难，任何模式（含 --yolo/--policy=audit）都硬拦、永不执行
+        if (decision.isBlocked()) {
+            logger.warn("已硬拦 BLOCKED 命令: {} （理由: {}, 规则: {}）",
+                    command, decision.reason(), decision.matchedRuleIds());
+            audit(command, segTexts(decision), com.cyk.security.CommandLevel.BLOCKED,
+                decision.matchedRuleIds(), com.cyk.security.AuditLogger.Decision.BLOCKED,
+                "denied", null, null, cwdStr);
+            return ToolRegistry.toolError(
+                "命令被安全策略拦截：" + decision.reason()
+                + "。此类系统级不可逆灾难操作永不执行（--yolo 也不例外）。"
+                + "请如实告知用户风险，改由用户自行手动操作，不要重试同类命令。");
+        }
+
+        // 第四步之二：WRITE/DANGEROUS 需确认。审计模式与 --yolo 的处置差异（R7/R8）：
+        //   --policy=audit：只分类+记录、不打断（排查误杀用）——但 BLOCKED 已在上一步硬拦，绝不执行
+        //   --yolo：跳过 WRITE 确认，但不跳 DANGEROUS 强确认（R8 明确）
+        String approvalLabel = decision.isAutoAllowed() ? "auto" : "confirmed";
+        if (decision.needsConfirmation()) {
+            boolean skipForAudit = com.cyk.security.SecurityContext.isAuditOnly();
+            boolean skipForYolo = com.cyk.security.SecurityContext.isYolo()
+                && decision.level() == com.cyk.security.CommandLevel.WRITE;
+            if (skipForAudit) {
+                approvalLabel = "audit-mode";
+                Ui.out().println(com.cyk.util.ConsoleUi.dimPrefix()
+                    + "[审计模式] " + decision.level() + " 命令将不拦截直接执行："
+                    + decision.normalizedCommand());
+            } else if (skipForYolo) {
+                approvalLabel = "yolo";
+            } else {
+                com.cyk.security.ConfirmationProvider.Approval approval =
+                    com.cyk.security.SecurityContext.confirmation().request(decision,
+                        com.cyk.security.ApprovalContext.forCommand(args, workDir));
+                if (approval != com.cyk.security.ConfirmationProvider.Approval.ALLOW) {
+                    boolean interactive = Ui.userInput().isInteractive();
+                    audit(command, segTexts(decision), decision.level(), decision.matchedRuleIds(),
+                        interactive ? com.cyk.security.AuditLogger.Decision.REJECTED_BY_USER
+                            : com.cyk.security.AuditLogger.Decision.REJECTED_NONINTERACTIVE,
+                        "denied", null, null, cwdStr);
+                    return ToolRegistry.toolError(interactive
+                        ? "用户拒绝执行此命令（级别 " + decision.level() + "：" + decision.reason() + "）。"
+                            + "请勿重复请求同类命令；如确有必要，先向用户说明影响再由其决定。"
+                        : "当前为非交互模式（脚本/管道调用），需要确认的操作一律拒绝（级别 "
+                            + decision.level() + "：" + decision.reason() + "）。"
+                            + "请告知用户改用交互式运行，或降低操作风险后重试。");
+                }
+                approvalLabel = decision.needsStrongConfirmation() ? "yes" : "confirmed";
+            }
+        }
+
+        // 第五步：重复命令护栏——同一命令第 3 次起拒绝，打断"搜不到就换个姿势再全盘扫"的死循环。
+        if (COMMAND_COUNTS.size() >= COMMAND_COUNTS_LIMIT) {
+            COMMAND_COUNTS.clear();
+        }
+        String commandKey = normalizeForRepeatGuard(command);
+        int repeats = COMMAND_COUNTS.merge(commandKey, 1, Integer::sum);
+        if (repeats > MAX_SAME_COMMAND_REPEATS) {
+            logger.warn("拒绝重复命令（第 {} 次）: {}", repeats, command);
+            audit(command, segTexts(decision), decision.level(), List.of("repeat-guard"),
+                com.cyk.security.AuditLogger.Decision.BLOCKED_REPEAT, "denied", null, null, cwdStr);
+            return ToolRegistry.toolError(
+                "这条命令在本会话已执行过 " + MAX_SAME_COMMAND_REPEATS + " 次，结果不会变，已拒绝重复执行。"
+                + "不要再用微调后的同类搜索命令重试。请换策略："
+                + "①目标应用自带的能力优先（如知识库操作用 rag_list/rag_delete，文件查找用 search_files）；"
+                + "②直接问用户具体路径/凭据位置；③如实告知用户用现有工具无法完成。");
+        }
+
+        // 第六步：终端回显——让用户实时看到模型正在执行什么命令（透明性；P1-1 将统一迁入 Ui）
         long seq = COMMAND_SEQ.incrementAndGet();
-        String cwdDisplay = shortenHome(workDir.toString());
-        System.out.println("\n┌─ [run #" + seq + "] " + cwdDisplay);
-        System.out.println("│ $ " + command);
-        System.out.println("└─ 执行中（超时 " + timeout + "s）...");
+        String cwdDisplay = shortenHome(cwdStr);
+        Ui.out().println("\n┌─ [run #" + seq + "] " + cwdDisplay);
+        Ui.out().println("│ $ " + command);
+        Ui.out().println("└─ 执行中（超时 " + timeout + "s）...");
 
-        // 第五步：构建进程并执行
+        // 第七步：构建进程并执行
+        long execStart = System.nanoTime();
         try {
             ProcessBuilder pb = buildProcess(command, asString(args.get("shell")), workDir);
             // 子进程禁止交互：立即关闭 stdin，需要输入的命令会快速报错而非永久挂起
@@ -287,14 +367,17 @@ public class TerminalTool {
             CompletableFuture<String> stderrFuture =
                 CompletableFuture.supplyAsync(() -> pumpStream(process, false));
 
-            // 第六步：限时等待 + 超时强杀
+            // 第八步：限时等待 + 超时强杀（含子进程树，P1-3 R3）
             boolean finished = process.waitFor(timeout, TimeUnit.SECONDS);
             if (!finished) {
-                process.destroyForcibly();
+                com.cyk.util.ProcessTerminator.destroyTree(process);
                 process.waitFor(5, TimeUnit.SECONDS);
                 String partialStdout = safeGet(stdoutFuture);
                 String partialStderr = safeGet(stderrFuture);
-                System.out.println("  ⚠ 命令超时（" + timeout + "s），已强制终止");
+                long durMs = (System.nanoTime() - execStart) / 1_000_000L;
+                Ui.out().println("  ⚠ 命令超时（" + timeout + "s），已强制终止进程树");
+                audit(command, segTexts(decision), decision.level(), decision.matchedRuleIds(),
+                    com.cyk.security.AuditLogger.Decision.ALLOWED, approvalLabel, -1, durMs, cwdStr);
                 return ToolRegistry.toolResult(Map.of(
                     "command", command,
                     "exit_code", -1,
@@ -302,15 +385,18 @@ public class TerminalTool {
                     "timeout_seconds", timeout,
                     "stdout", truncate(partialStdout),
                     "stderr", truncate(partialStderr),
-                    "note", "命令超时被强制终止。长耗时命令请增大 timeout_seconds，或拆分执行。"));
+                    "note", "命令超时被强制终止（含子进程树）。长耗时命令请增大 timeout_seconds，或拆分执行。"));
             }
 
             int exitCode = process.exitValue();
             String stdout = truncate(safeGet(stdoutFuture));
             String stderr = truncate(safeGet(stderrFuture));
+            long durMs = (System.nanoTime() - execStart) / 1_000_000L;
 
-            // 第七步：终端回显执行结果摘要（前几行），完整内容返回给模型
+            // 第九步：终端回显执行结果摘要（前几行），完整内容返回给模型
             echoResultSummary(seq, exitCode, stdout, stderr);
+            audit(command, segTexts(decision), decision.level(), decision.matchedRuleIds(),
+                com.cyk.security.AuditLogger.Decision.ALLOWED, approvalLabel, exitCode, durMs, cwdStr);
 
             return ToolRegistry.toolResult(Map.of(
                 "command", command,
@@ -318,16 +404,41 @@ public class TerminalTool {
                 "timed_out", false,
                 "stdout", stdout,
                 "stderr", stderr,
-                "workdir", workDir.toString()));
+                "workdir", cwdStr));
 
         } catch (IOException e) {
-            System.out.println("  ✗ 命令启动失败: " + e.getMessage());
+            Ui.out().println("  ✗ 命令启动失败: " + e.getMessage());
             logger.warn("命令执行失败: {} -> {}", command, e.getMessage());
             return ToolRegistry.toolError("命令启动失败: " + e.getMessage());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return ToolRegistry.toolError("命令执行被中断");
         }
+    }
+
+    /** 提取决策中各分段的原始文本（写审计用）。 */
+    private static List<String> segTexts(com.cyk.security.PolicyDecision decision) {
+        return decision.segments().stream()
+                .map(com.cyk.security.CommandSegment::rawText).toList();
+    }
+
+    /**
+     * 写入一条审计记录（P0-2 R10）。
+     *
+     * <p>null 安全：审计器不可用（未启用/初始化失败）时静默跳过，绝不影响命令执行——
+     * 审计是尽力而为的留痕，不能成为命令执行的单点故障。落盘前由 AuditLogger 统一脱敏。</p>
+     */
+    private static void audit(String command, List<String> segments,
+                              com.cyk.security.CommandLevel level, List<String> rules,
+                              com.cyk.security.AuditLogger.Decision decisionKind, String approval,
+                              Integer exitCode, Long durationMs, String cwd) {
+        com.cyk.security.AuditLogger auditLogger =
+                com.cyk.security.SecurityContext.auditLogger();
+        if (auditLogger == null) {
+            return;
+        }
+        auditLogger.record(new com.cyk.security.AuditLogger.AuditRecord(
+                command, segments, level, rules, decisionKind, approval, exitCode, durationMs, cwd));
     }
 
     /**
@@ -430,10 +541,10 @@ public class TerminalTool {
     /** 在终端回显执行结果摘要：完整输出可能很长，屏幕只显示前 6 行 */
     private static void echoResultSummary(long seq, int exitCode, String stdout, String stderr) {
         String status = exitCode == 0 ? "✓ 退出码 0" : "✗ 退出码 " + exitCode;
-        System.out.println("  [" + seq + "] " + status);
+        Ui.out().println("  [" + seq + "] " + status);
         printHead(stdout, 6, "  │ ");
         if (exitCode != 0 && stderr != null && !stderr.isBlank()) {
-            System.out.println("  │ stderr:");
+            Ui.out().println("  │ stderr:");
             printHead(stderr, 4, "  │ ");
         }
     }
@@ -447,10 +558,10 @@ public class TerminalTool {
         int shown = 0;
         for (String line : lines) {
             if (shown >= maxLines) {
-                System.out.println(prefix + "...（共 " + lines.length + " 行，其余已省略）");
+                Ui.out().println(prefix + "...（共 " + lines.length + " 行，其余已省略）");
                 break;
             }
-            System.out.println(prefix + line);
+            Ui.out().println(prefix + line);
             shown++;
         }
     }
@@ -483,24 +594,20 @@ public class TerminalTool {
             .name("run_command")
             .toolset("terminal")
             .schema(Map.of(
-                "description", "在用户本机终端执行 shell 命令并返回输出。"
-                    + "适用于：查询系统信息（时间/进程/端口/磁盘）、执行构建与测试（mvn/npm/pytest）、"
-                    + "数据库操作（psql/mysql）、git 操作、运行脚本等。"
-                    + "Windows 默认 PowerShell（多命令用 ; 分隔，不要用 &&），可用 shell 参数切换 cmd；"
-                    + "Linux/macOS 默认 bash。系统级灾难命令（格式化磁盘、删根目录、关机等）会被自动拦截；"
-                    + "数据级破坏操作（删库、批量删文件）执行前必须先向用户说明影响并获得确认。",
+                "description", "执行本机shell命令并返回输出。填写目的和预期结果供宿主确认；系统级灾难操作硬拦，写入/高危操作按策略确认。",
                 "parameters", Map.of(
                     "type", "object",
                     "properties", Map.of(
                         "command", Map.of("type", "string",
                             "description", "要执行的完整命令串"),
                         "workdir", Map.of("type", "string",
-                            "description", "工作目录（绝对路径），缺省为用户启动 Jhermes 时所在目录"),
+                            "description", "工作目录（绝对路径），缺省为启动目录"),
                         "timeout_seconds", Map.of("type", "integer",
-                            "description", "超时秒数，默认 30，上限 300；构建/测试等长耗时命令建议 120"),
+                            "description", "超时秒数，默认 30，上限 300"),
                         "shell", Map.of("type", "string",
-                            "description", "指定 shell：Windows 可选 cmd（默认 powershell）；"
-                                + "Linux/macOS 可选 sh（默认 bash）")),
+                            "description", "Windows可选cmd，Unix可选sh"),
+                        "purpose", Map.of("type", "string", "description", "一句话说明操作目的"),
+                        "expected_result", Map.of("type", "string", "description", "一句话说明预期结果，不是已完成结果")),
                     "required", List.of("command"))))
             .handler(TerminalTool::runCommand)
             .emoji("💻")

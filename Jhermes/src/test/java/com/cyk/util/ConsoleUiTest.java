@@ -195,9 +195,11 @@ class ConsoleUiTest {
 
     @Test
     void assistantPrefixShouldContainVisibleMarker() {
+        // 断言动态引用 Constants.CLI_NAME：项目曾从 sk-hermes 改名 Jhermes，
+        // 硬编码品牌名的断言在改名后立刻过期（本次基线修复的真实教训）
         assertThat(ConsoleUi.assistantPrefix())
                 .contains("◆")
-                .contains("Hermes:");
+                .contains(com.cyk.constant.Constants.CLI_NAME);
     }
 
     @Test

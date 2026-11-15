@@ -1,0 +1,47 @@
+=== CASE 1 : 读取当前目录下的 pom.xml，只回答 artifactId 与 version 两个值，用一行给出，不要解释过程 ===
+ANSWER>>> artifactId: Jhermes，version: 2.1.0
+<<<END
+TOKENS: 本轮 输入 13,181 / 输出 68 / 总计 13,249 tokens
+
+=== CASE 2 : 在 src 目录下搜索文件名包含 Command 的 java 文件，只列出文件名（每行一个），不要解释 ===
+ANSWER>>> AuditCommand.java
+ChatCommand.java
+ResumeCommand.java
+SecurityCheckCommand.java
+SecurityCommand.java
+SessionsCommand.java
+CommandOutcome.java
+SlashCommand.java
+SlashCommandContext.java
+SlashCommandRegistry.java
+CommandLevel.java
+CommandPolicy.java
+CommandRule.java
+CommandSegment.java
+CommandSegmenter.java
+SlashCommandRegistryTest.java
+CommandPolicyMatrixTest.java
+CommandSegmenterTest.java
+CommandPolicyBaselineTest.java
+<<<END
+TOKENS: 本轮 输入 11,443 / 输出 175 / 总计 11,618 tokens
+
+=== CASE 3 : 执行命令获取当前系统日期，只回答日期结果本身 ===
+ANSWER>>> 无法获取系统日期。当前终端处于非交互模式，所有命令（包括 Get-Date、date /t 等只读日期查询）均被安全策略拦截，判定为需要确认或高危操作而拒绝执行，因此我无法执行任何命令来获取当前日期。请改用交互式运行环境，或手动确认允许执行后重试。
+<<<END
+TOKENS: 本轮 输入 27,491 / 输出 1,073 / 总计 28,564 tokens
+
+=== CASE 4 : 请记住一条信息：项目代号是 Falcon-7。只回答是否已保存成功 ===
+ANSWER>>> 已保存成功。
+<<<END
+TOKENS: 本轮 输入 10,632 / 输出 101 / 总计 10,733 tokens
+
+=== CASE 5 : 列出本机已保存的技能名称，并读取该技能的正文，用两三句话概括其要点 ===
+ANSWER>>> 本机已保存的技能只有一个：brainstorming。
+
+其正文要点：这是一个用于创作类工作前的强制前置流程，核心是把想法转化为成型设计。它先把任务分为三类——可行性探究（spike）、有界改动（bounded）、架构级工作（architectural），分别走不同深度流程；无论哪类，都强调在动手写代码前必须先澄清用户意图、复述理解并征得用户对设计方案的明确批准，禁止"太简单不用确认"或跳过审批门直接实现。
+
+具体路径：spike 只输出答案与建议、代码算一次性弃用；bounded 改动在对话里给出简短设计并等人点头再实现；architectural 则要完整走提问、提出方案、分段设计、写成规范文档（spec）并经用户审阅后，才转入编写实施计划的环节。
+<<<END
+TOKENS: 本轮 输入 19,038 / 输出 381 / 总计 19,419 tokens
+

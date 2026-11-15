@@ -5,6 +5,18 @@ import com.cyk.manager.SkillManager;
 
 import java.util.*;
 
+/**
+ * 技能关键词匹配器（<b>暂无调用方，保留待 P2-1 复用</b>——决策 D-2）。
+ *
+ * <p>P0-3 期 3 移除了本类在 {@code Agent#buildSkillContext} 的唯一调用点：
+ * 旧机制按「恢复的历史文本」匹配技能并注入<b>全文</b>，而新会话没有历史
+ * → 恒匹配为空，技能系统对模型完全不可见（附录 A19 缺陷）。
+ * 替代方案是 {@code SkillIndexBuilder} 的无条件紧凑索引 + {@code skill_manage get}
+ * 按需取正文（见 resources/prompts/skills-index.md）。</p>
+ *
+ * <p>保留本类的原因：P2-1 修复自进化闭环时，「按当前任务给技能加权排序」
+ * 仍需要关键词/标签匹配能力，届时在索引渲染上叠加本类打分即可，避免重建成本。</p>
+ */
 public class SkillMatcher {
 
     private static final SkillManager skillManager = SkillManager.getInstance();

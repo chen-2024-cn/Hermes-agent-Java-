@@ -14,7 +14,7 @@
 -->
 <configuration>
 
-    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <appender name="STDOUT" class="com.cyk.ui.WaitingConsoleAppender">
         <encoder>
             <!-- 简洁格式：时间 [级别] logger - 消息 -->
             <pattern>%d{HH:mm:ss.SSS} [%level] %logger{24} - %msg%n</pattern>

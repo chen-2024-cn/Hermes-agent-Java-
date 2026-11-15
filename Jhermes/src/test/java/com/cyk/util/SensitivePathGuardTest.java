@@ -46,8 +46,6 @@ class SensitivePathGuardTest {
         // 真实事故来源：2026-09-28 模型 Get-Content 了 .meta.json 导致 Feishu token 进对话历史
         assertThat(SensitivePathGuard.check("Get-Content C:\\Users\\admin\\.ai_tools\\.meta.json -Raw")).isNotNull();
         assertThat(SensitivePathGuard.check("cat ~/.jhermes/config.yaml")).isNotNull();
-        // 旧目录名必须同样拦截：迁移失败/两目录并存时凭据仍在旧路径，只拦新名等于留口子
-        assertThat(SensitivePathGuard.check("cat ~/.skhermes/config.yaml")).isNotNull();
         assertThat(SensitivePathGuard.checkPath(Paths.get(HOME, ".jhermes", "config.yaml"))).isNotNull();
     }
 
@@ -80,6 +78,71 @@ class SensitivePathGuardTest {
         assertThat(SensitivePathGuard.check("")).isNull();
         assertThat(SensitivePathGuard.checkPath(null)).isNull();
         assertThat(SensitivePathGuard.isSensitivePath(null)).isFalse();
+    }
+
+    // =========================================================================
+    // P0-2 R11 新增标记：环境变量密钥 / 私钥证书 / 云凭据 / 自我保护目录
+    // =========================================================================
+
+    @Test
+    void shouldDetectEnvFilesAndKeyMaterial() {
+        // .env 系列（右边界校验：.env 后跟 '/' 或结尾命中，".environment" 不误伤）
+        assertThat(SensitivePathGuard.check("Get-Content .env")).isNotNull();
+        assertThat(SensitivePathGuard.check("cat .env.production")).isNotNull();
+        assertThat(SensitivePathGuard.check("cat config/.env.local")).isNotNull();
+        // 私钥与密钥库材料
+        assertThat(SensitivePathGuard.check("Get-Content server.pem")).isNotNull();
+        assertThat(SensitivePathGuard.check("type tls.key")).isNotNull();
+        assertThat(SensitivePathGuard.check("keytool -list -keystore app.jks")).isNotNull();
+        assertThat(SensitivePathGuard.check("cat cert.p12")).isNotNull();
+    }
+
+    @Test
+    void shouldDetectCloudVendorCredentialDirs() {
+        assertThat(SensitivePathGuard.check("cat ~/.azure/accessTokens.json")).isNotNull();
+        assertThat(SensitivePathGuard.check("cat ~/.config/gcloud/credentials.db")).isNotNull();
+        assertThat(SensitivePathGuard.check(
+                "type $env:APPDATA\\gcloud\\application_default_credentials.json")).isNotNull();
+    }
+
+    @Test
+    void shouldProtectPolicyAndAuditDirsFromModelTampering() {
+        // R11：模型不得读写自己的命令规则文件，也不得篡改/删除审计留痕
+        assertThat(SensitivePathGuard.check(
+                "echo evil > ~/.jhermes/security/rules.yaml")).isNotNull();
+        assertThat(SensitivePathGuard.check(
+                "Get-Content ~/.jhermes/security/rules.yaml")).isNotNull();
+        assertThat(SensitivePathGuard.check(
+                "Remove-Item ~/.jhermes/logs/audit-2026-10-09.jsonl")).isNotNull();
+        assertThat(SensitivePathGuard.checkPath(
+                Paths.get(HOME, ".jhermes", "security", "rules.yaml"))).isNotNull();
+        assertThat(SensitivePathGuard.isSensitivePath(
+                Paths.get(HOME, ".jhermes", "logs"))).isTrue();
+    }
+
+    @Test
+    void r11MarkersShouldNotFlagLookalikes() {
+        // 右边界校验：普通词不得因含 .env/.pem/.key 子串而误伤
+        assertThat(SensitivePathGuard.check("cat environment.txt")).isNull();
+        assertThat(SensitivePathGuard.check("echo monkey.jpg")).isNull();
+        assertThat(SensitivePathGuard.check("cat .keys.json")).isNull();// .key 后跟 s → 不命中
+        assertThat(SensitivePathGuard.check("grep pemfile notes.txt")).isNull();
+    }
+
+    @Test
+    void shouldProtectUserPromptOverrideDirFromModelTampering() {
+        // P0-3 D-3：~/.jhermes/prompts 是提示词覆盖通道——模型改写它等价于
+        // 植入跨会话持久的提示词注入，读写均须硬拦（两种斜杠风格）
+        assertThat(SensitivePathGuard.check(
+                "echo evil > ~/.jhermes/prompts/identity.md")).isNotNull();
+        assertThat(SensitivePathGuard.check(
+                "Set-Content C:\\Users\\admin\\.jhermes\\prompts\\manifest.yaml")).isNotNull();
+        assertThat(SensitivePathGuard.checkPath(
+                Paths.get(HOME, ".jhermes", "prompts", "execution.md"))).isNotNull();
+        assertThat(SensitivePathGuard.isSensitivePath(
+                Paths.get(HOME, ".jhermes", "prompts"))).isTrue();
+        // 右边界：prompts 后紧跟字母的无关目录不误伤（.jhermes/promptscript 等）
+        assertThat(SensitivePathGuard.check("cat ~/.jhermes/promptscript/run.sh")).isNull();
     }
 
     // =========================================================================

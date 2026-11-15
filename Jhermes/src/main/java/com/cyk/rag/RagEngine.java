@@ -72,6 +72,7 @@ public class RagEngine {
             // 优先使用 embedding 独立 api_key，未配置则回退到 chat 模型的 api_key
             String embedApiKey = config.getFromYml("rag.embedding.api_key", "");
             if (embedApiKey == null || embedApiKey.isEmpty()) {
+                logger.warn("embedding.api_key未填写，已默认使用model.api_key，若该商家不支持或者不是同一商家请尽快添加");
                 embedApiKey = config.getApiKey();
             }
             EmbeddingClient embedding = new OpenAiEmbedding(embedUrl, embedModel, embedApiKey, dimension);

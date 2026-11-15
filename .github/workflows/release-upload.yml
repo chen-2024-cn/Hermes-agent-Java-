@@ -1,25 +1,34 @@
 name: Build and Upload Release Jar
 
-# 手动触发：在云端 runner 上构建 hermes.jar 并上传到指定 Release tag。
-# 用途：绕开本机到 uploads.github.com 的网络不稳定（大文件 connection reset），
-#      由 runner（同区域访问 GitHub）秒传。
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '目标 Release tag（已存在则上传资产，不存在则自动创建）'
+        description: 'Existing version tag to build and publish (assets are never overwritten)'
         required: true
-        default: 'v2.1.0'
+        default: 'v2.2.1'
 
 permissions:
-  contents: write   # 上传 Release 资产必需
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
   build-and-upload:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Validate tag input
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid version tag"; exit 1; }
+
+      - name: Checkout version tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
 
       - name: Setup JDK 21
         uses: actions/setup-java@v4
@@ -28,25 +37,48 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Build fat jar (slimmed)
-        run: mvn -f Jhermes/pom.xml clean package -DskipTests -q
-
-      - name: 复制为 hermes.jar 并核验体积
-        run: |
-          cp Jhermes/target/Jhermes-1.0-SNAPSHOT.jar hermes.jar
-          echo "jar size: $(du -h hermes.jar | cut -f1)"
-          # 瘦身核验：非 win32 的 Playwright 驱动应已被 shade 排除，jar 应 ~45MB 而非 ~182MB
-          SZ=$(stat -c%s hermes.jar)
-          echo "bytes=$SZ"
-          if [ "$SZ" -gt 120000000 ]; then echo "警告: jar 异常偏大，瘦身过滤器可能未生效"; fi
-
-      - name: Upload to Release (创建或用已有 tag)
+      - name: Validate version and release target
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag }}
         run: |
-          # tag 不存在则先建（已存在时 gh release upload 直接复用）
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Jhermes $TAG" --generate-notes
-          gh release upload "$TAG" hermes.jar --clobber
-          echo "==== 上传后资产核验 ===="
-          gh release view "$TAG" --json assets --jq '.assets[]|{name,size,state}'
+          python3 - <<'PY'
+          import json, os, xml.etree.ElementTree as ET
+          version = ET.parse('Jhermes/pom.xml').getroot().find('{http://maven.apache.org/POM/4.0.0}version').text
+          package = json.load(open('npm-package/package.json'))
+          assert os.environ['TAG'] == 'v' + version, 'Tag and Maven version differ'
+          assert package['version'] == version, 'npm and Maven versions differ'
+          assert package['hermes']['jarUrl'] == f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/v{version}/hermes.jar", 'Download URL differs'
+          PY
+          if gh release view "$TAG" --json assets >/dev/null 2>&1; then
+            COUNT=$(gh release view "$TAG" --json assets --jq '.assets | length')
+            [ "$COUNT" = 0 ] || { echo "Release already has assets; refusing overwrite"; exit 1; }
+          fi
+
+      - name: Build fat jar with tests
+        run: |
+          chmod +x Jhermes/mvnw
+          ./Jhermes/mvnw -f Jhermes/pom.xml clean package -B
+
+      - name: Stage and verify jar
+        env:
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          VER="${TAG#v}"
+          cp "Jhermes/target/Jhermes-$VER.jar" hermes.jar
+          java -jar hermes.jar --version | tee version-output.txt
+          grep -Fx "Jhermes $VER" version-output.txt
+          sha256sum hermes.jar > hermes.jar.sha256
+          stat -c 'jar bytes=%s' hermes.jar
+
+      - name: Publish release without replacing assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --draft --title "Jhermes $TAG" --generate-notes
+          fi
+          gh release upload "$TAG" hermes.jar hermes.jar.sha256
+          gh release edit "$TAG" --draft=false --latest
+          gh release view "$TAG" --json assets --jq '.assets[] | {name,size,state}'

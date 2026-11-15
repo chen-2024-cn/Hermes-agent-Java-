@@ -1,6 +1,7 @@
 package com.cyk.tool;
 
 import com.cyk.bean.ToolEntry;
+import com.cyk.rag.RagEngine;
 import com.cyk.util.PromptInjectionGuard;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -166,11 +167,49 @@ public class ToolRegistry {
         if (toolEntry == null) {
             return toolError("未找到工具：" + name);
         }
-        // handler 是在注册时绑定的函数引用，如 FileTool::readFile
-        String result = toolEntry.getHandler().apply(args);
-        result = annotateExternalContent(result, toolEntry);
-        return capResultSize(result, toolEntry);
+        try {
+            // handler 是在注册时绑定的函数引用，如 FileTool::readFile
+            String result = toolEntry.getHandler().apply(args);
+            result = annotateExternalContent(result, toolEntry);
+            return capResultSize(result, toolEntry);
+        } catch (OutOfMemoryError oom) {
+            // 堆内存耗尽属 JVM 级不可恢复状态：任何「优雅降级」都建立在还能分配内存的前提上，
+            // 吞掉它只会让进程带着已损坏的堆继续跑，因此原样上抛（P0-5 R1 明确的唯一例外）。
+            throw oom;
+        } catch (Throwable t) {
+            // 附录 A2：改造前此处无任何边界，工具内部一个 ClassCastException / NPE
+            // 就会穿透到 Agent.run() 并让整个进程以「执行异常」退出，会话不落盘。
+            // 工具失败属于「本轮任务受阻」，而非「会话终止」：降级为 error JSON
+            // 回传模型，模型可据此改参数重试或如实告知用户，对话得以继续。
+            logger.warn("工具 {} 执行异常: {}", name, t.toString(), t);
+            return toolError("工具执行异常: " + describeError(t)
+                    + "。工具本身出错并非任务失败，请检查参数后重试，或改用其他工具；"
+                    + "若反复失败请如实告知用户，不要无限重试同一调用。");
+        }
     }
+
+    /**
+     * 提取异常的简短描述供回传模型：类名 + message（截断）。
+     *
+     * <p>不把整条堆栈塞进对话历史：一是 token 成本（堆栈会被后续每轮重发），
+     * 二是 message 可能携带本地路径等噪音；完整堆栈已记入 WARN 日志供排查。</p>
+     *
+     * <p>包级可见便于单测验证截断行为。</p>
+     */
+    static String describeError(Throwable t) {
+        String message = t.getMessage();
+        if (message == null || message.isBlank()) {
+            return t.getClass().getSimpleName();
+        }
+        String trimmed = message.trim();
+        if (trimmed.length() > MAX_ERROR_MESSAGE_CHARS) {
+            trimmed = trimmed.substring(0, MAX_ERROR_MESSAGE_CHARS) + "...";
+        }
+        return t.getClass().getSimpleName() + ": " + trimmed;
+    }
+
+    /** 回传给模型的异常描述最大字符数（完整堆栈在日志里）。 */
+    static final int MAX_ERROR_MESSAGE_CHARS = 300;
 
     /**
      * 外部内容注入扫描：命中威胁话术/不可见字符时，在结果前加显式安全警示。
@@ -288,38 +327,111 @@ public class ToolRegistry {
     }
 
     /**
+     * 按工具集分组返回已注册工具（P0-3 能力派生的数据源）。
+     *
+     * <p>{@code CapabilityRegistry} 、{@code /help} 渲染与提示词「当前能力」段
+     * 均从本方法取数，与注册实况同源，不可能与真实可用工具漂移。</p>
+     *
+     * <p>返回结构：外层按工具集名字典序（TreeMap）、内层按工具名字典序，
+     * 全部不可变——保证多次调用输出顺序稳定（提示词前缀稳定性依赖，P0-4 R8）。</p>
+     *
+     * @return 工具集名 → 该集内工具条目（均已排序、不可变）
+     */
+    public Map<String, List<ToolEntry>> entriesByToolset() {
+        Map<String, List<ToolEntry>> grouped = new TreeMap<>();
+        for (ToolEntry entry : tools.values()) {
+            grouped.computeIfAbsent(entry.getToolset(), k -> new ArrayList<>()).add(entry);
+        }
+        Map<String, List<ToolEntry>> result = new LinkedHashMap<>();
+        grouped.forEach((toolset, list) -> {
+            list.sort(Comparator.comparing(ToolEntry::getName));
+            result.put(toolset, Collections.unmodifiableList(list));
+        });
+        return Collections.unmodifiableMap(result);
+    }
+
+    /**
+     * 仅供测试：清空全局单例中已注册的工具。
+     *
+     * <p>{@link #initialize} 本身会先清空再注册（幂等），本钩子供测试在
+     * 用例结束后复位全局状态，避免污染其它测试类。生产代码不得调用。</p>
+     */
+    public static void clearForTest() {
+        instance.tools.clear();
+    }
+
+    /**
      * 注册要使用的工具
      *
      * <p>接收调用方已加载好的配置，避免内部再次 {@code HermesConfig.load()}
      * 造成双份磁盘 IO 和两份可能不一致的配置对象。</p>
      *
+     * <p><b>工具集黑名单</b>（P0-3 R7）：{@code tools.disabled_toolsets} 中列出的
+     * 工具集直接不注册（连同指引段一并消失，由 CapabilityRegistry 派生保证），
+     * 模型完全感知不到——与 terminal_enabled 同一哲学：不注册比拦截更彻底。</p>
+     *
+     * <p><b>幂等</b>：入口先清空再注册，同一 JVM 内可反复以不同配置重建
+     *（矩阵测试与 {@code /model} 类运行期重载都依赖这一点，不残留上一轮工具）。</p>
+     *
      * @param config 已加载的配置（RAG 懒加载判断依赖 rag.enabled 等字段）
      */
     public static void initialize(com.cyk.config.HermesConfig config) {
-        FileTool.register(instance);
-        MemoryTool.register(instance);
-        SkillTool.register(instance);
-        WebSearchTool.register(instance);
-        FetchPageTool.register(instance);
+        // 幂等重入：先清空，避免反复 initialize 时残留/重复注册
+        instance.tools.clear();
 
-        // 终端命令执行工具（配置开关：tools.terminal_enabled，默认开启）
+        // 命令安全上下文初始化（P0-2）：构建策略、确认闸门、审计器。
+        // 无论 terminal_enabled 与否都要初始化——SkillTool 的技能脚本执行同样经 CommandPolicy（R14）。
+        com.cyk.security.SecurityContext.init(config);
+
+        Set<String> disabled = config.getDisabledToolsets();
+
+        if (toolsetEnabled("file_operations", disabled)) {
+            FileTool.register(instance);
+        }
+        if (toolsetEnabled("memory", disabled)) {
+            MemoryTool.register(instance);
+        }
+        // SkillTool 需要配置：技能脚本执行超时（P0-5 R10）由 skill.script_timeout_seconds 控制
+        if (toolsetEnabled("skill", disabled)) {
+            SkillTool.register(instance, config);
+        }
+        if (toolsetEnabled("web", disabled)) {
+            WebSearchTool.register(instance);
+            FetchPageTool.register(instance);
+        }
+
+        // 终端命令执行工具：功能开关（tools.terminal_enabled）与工具集黑名单任一命中即不注册。
         // 关闭时不注册，模型完全感知不到 run_command 的存在——比提示词约束更彻底
-        if (config.isTerminalToolEnabled()) {
+        if (config.isTerminalToolEnabled() && toolsetEnabled("terminal", disabled)) {
             TerminalTool.register(instance);
-        } else {
+        } else if (!config.isTerminalToolEnabled()) {
             logger.info("终端工具已按配置禁用（tools.terminal_enabled=false）");
         }
 
-        // RAG 引擎（懒初始化：仅当配置启用且 pgvector 可用时注册）
-        try {
-            com.cyk.rag.RagEngine ragEngine = com.cyk.rag.RagEngine.create(config);
-            if (ragEngine != null) {
-                com.cyk.tool.RagTool.setEngine(ragEngine);
-                com.cyk.tool.RagTool.register(instance);
+        // RAG 引擎（懒初始化：仅当工具集未被禁用、配置启用且 pgvector 可用时注册）。
+        // 黑名单命中时连 RagEngine.create 都不调——避免无意义的数据库连接尝试。
+        if (toolsetEnabled("rag", disabled)) {
+            try {
+                RagEngine ragEngine = RagEngine.create(config);
+                if (ragEngine != null) {
+                    RagTool.setEngine(ragEngine);
+                    RagTool.register(instance);
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to initialize RAG engine: {}", e.getMessage());
             }
-        } catch (Exception e) {
-            logger.warn("Failed to initialize RAG engine: {}", e.getMessage());
         }
+    }
+
+    /**
+     * 工具集是否在黑名单之外（可注册）；命中黑名单时记 INFO 并返回 false。
+     */
+    private static boolean toolsetEnabled(String toolset, Set<String> disabledToolsets) {
+        if (disabledToolsets.contains(toolset)) {
+            logger.info("工具集 '{}' 已按配置禁用（tools.disabled_toolsets），相关工具不注册", toolset);
+            return false;
+        }
+        return true;
     }
 
 }

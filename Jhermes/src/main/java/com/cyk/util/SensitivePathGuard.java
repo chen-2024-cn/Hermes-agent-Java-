@@ -52,12 +52,36 @@ public final class SensitivePathGuard {
         "id_rsa", "id_ed25519",
         ".npmrc",                      // npm 可能含 _authToken
         ".pypirc",
+        // ---- P0-2 R11 扩充：环境变量密钥与私钥/证书材料 ----
+        // 右边界校验保证 ".env"/".pem"/".key" 只在文件扩展名或目录名处命中，
+        // 不误伤 ".keystore"（.key 后跟字母 s → 不命中，故单独列出）、"monkeys" 等普通词。
+        ".env",                        // .env / .env.production / .env.local 环境变量密钥
+        ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".p7b",   // 私钥与密钥库
+        // ---- 云厂商凭据 ----
+        ".azure",                      // ~/.azure（Azure CLI accessTokens.json / azureProfile.json）
+        ".config\\gcloud", ".config/gcloud",   // gcloud ADC 凭据目录
+        "application_default_credentials.json", // Google Application Default Credentials
+        ".alicloud",                   // 阿里云 CLI 凭据
+        ".tencentcloud",               // 腾讯云 CLI 凭据
         // Jhermes 数据目录里的 config.yaml 含模型 api_key 与 PG 口令，读取即等于泄密。
-        // 新旧目录名必须同时拦截：Constants.migrateLegacyData 迁移失败/两目录并存时，
-        // 凭据仍在旧的 .skhermes 下，只拦新名会留下真实可利用的泄露口子。
         ".jhermes\\config.yaml", ".jhermes/config.yaml",
-        ".skhermes\\config.yaml", ".skhermes/config.yaml"
+        // ---- P0-2 R11：自我保护——策略文件目录与审计/日志目录，读写均拦 ----
+        // 防止模型改写自己的命令规则给自己开权限，或篡改/删除审计留痕。
+        // 注意：marker 结尾不能是紧跟字母数字的位置——右边界校验会拒绝（如 "audit-" 后接 "2026"），
+        // 故 logs 目录用 ".jhermes/logs"（其后必为 '/' 或结尾，能通过右边界），覆盖 audit-*.jsonl。
+        ".jhermes\\security", ".jhermes/security",
+        ".jhermes\\logs", ".jhermes/logs",
+        // ---- P0-3 D-3：用户级提示词覆盖目录，读写均拦 ----
+        // ~/.jhermes/prompts 下的文件会被 PromptLoader 优先加载、直接决定此后每一轮
+        // 系统提示词的内容——模型若被诱导改写它，等价于植入跨会话持久的提示词注入
+        //（比改记忆更危险：记忆有内容扫描，提示词每轮原文注入且无扫描）。
+        // 用户的合法定制走手工编辑，模型的任何正常任务都不需要触碰该目录。
+        ".jhermes\\prompts", ".jhermes/prompts"
     );
+
+    // Project rules must be adopted through the host UI, never rewritten or loaded by model tools.
+    private static final java.util.regex.Pattern INSTRUCTION_FILE = java.util.regex.Pattern.compile(
+            "(?i)(?<![a-z0-9_.-])(?:jhermes(?:\\.local)?\\.md|agents?\\.md|claude\\.md)(?![a-z0-9_.-])");
 
     private SensitivePathGuard() {
         // 工具类禁止实例化
@@ -73,6 +97,7 @@ public final class SensitivePathGuard {
         if (text == null || text.isEmpty()) {
             return null;
         }
+        if (INSTRUCTION_FILE.matcher(text).find()) return "项目指令文件 (请手工编辑, 下一任务自动加载)";
         String normalized = text.toLowerCase(Locale.ROOT);
         for (String marker : MARKERS) {
             int idx = normalized.indexOf(marker);

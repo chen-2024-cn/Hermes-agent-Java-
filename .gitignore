@@ -2,6 +2,8 @@
 target/
 *.jar
 *.war
+# shade 插件构建副产物（每次 package 自动生成，不得入库；2026-10-13 清理时移除误提交的旧文件）
+dependency-reduced-pom.xml
 
 # IDE files
 .idea/
@@ -22,8 +24,9 @@ CLAUDE.md
 # Superpowers
 .superpowers/
 
-# Project docs (external)
-docs/
+# Project docs
+# docs/ 按 JH-SPEC-001 决策纳入版本控制（基线报告、后续 ADR 决策记录均入库）
+# doc/（原始改造规范提示词等）仍不入库
 doc/
 *.zip
 
@@ -32,3 +35,6 @@ doc/
 
 # Docker compose 本机覆盖（模板见 .env.example）
 .env
+
+# Java 编译产物
+*.class

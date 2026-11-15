@@ -4,7 +4,12 @@
 
     <groupId>com.cyk</groupId>
     <artifactId>Jhermes</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <!-- 版本号单一事实源（JH-SPEC-001 P0-1 R2）：
+         构建期 resource filtering 将本值写入 classpath:/version.properties，
+         Constants.VERSION 与 picocli 版本输出均从该文件读取；
+         发布工作流的 tag / 产物名也由 pom 派生校验（release-upload.yml）。
+         历史教训：版本曾在 Constants(2.1.0) / pom(1.0-SNAPSHOT) / tag(v2.1.0) 三处漂移。 -->
+    <version>2.2.1</version>
     <packaging>jar</packaging>
 
     <name>Jhermes</name>
@@ -21,6 +26,7 @@
         <snakeyaml.version>2.2</snakeyaml.version>
         <picocli.version>4.7.5</picocli.version>
         <jsoup.version>1.17.2</jsoup.version>
+        <jline.version>3.30.0</jline.version>
     </properties>
 
     <dependencies>
@@ -29,6 +35,23 @@
             <groupId>info.picocli</groupId>
             <artifactId>picocli</artifactId>
             <version>${picocli.version}</version>
+        </dependency>
+        <!-- Interactive input: bracketed paste and Windows native terminal support -->
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-reader</artifactId>
+            <version>${jline.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-terminal-jni</artifactId>
+            <version>${jline.version}</version>
+        </dependency>
+        <!-- Windows explicit paste gestures; no terminal settings are changed. -->
+        <dependency>
+            <groupId>net.java.dev.jna</groupId>
+            <artifactId>jna-platform</artifactId>
+            <version>5.17.0</version>
         </dependency>
         <!-- YAML Configuration -->
         <dependency>
@@ -128,7 +151,30 @@
     </dependencies>
 
     <build>
+        <resources>
+            <!-- 普通资源（logback.xml / prompts 等）不做变量替换 -->
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <!-- 受过滤资源：version.properties 的 ${project.version} 由 pom 版本替换 -->
+            <resource>
+                <directory>src/main/filtered-resources</directory>
+                <filtering>true</filtering>
+            </resource>
+        </resources>
         <plugins>
+            <!-- Resources Plugin：显式声明 properties 过滤编码，
+                 否则 Maven 用平台默认编码（Windows=GBK）读写被过滤资源，
+                 version.properties 等含注释的中文内容可能乱码 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>3.3.1</version>
+                <configuration>
+                    <propertiesEncoding>UTF-8</propertiesEncoding>
+                </configuration>
+            </plugin>
+
             <!-- Compiler Plugin -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -186,6 +232,7 @@
                                 </filter>
                             </filters>
                             <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                                 <transformer
                                         implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>com.cyk.HermesAgent</mainClass>

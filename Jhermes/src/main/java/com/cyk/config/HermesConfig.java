@@ -10,11 +10,13 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class HermesConfig {
     private static final Logger logger = LoggerFactory.getLogger(HermesConfig.class);
@@ -40,11 +42,22 @@ public class HermesConfig {
     /** CLI 直接指定的温度覆盖值（优先级最高，仅内存生效不落盘）。 */
     private Double temperatureOverride;
 
+    /** temperature 合理范围下限（0.0 = 确定性输出）。 */
+    private static final double MIN_TEMPERATURE = 0.0;
+    /** temperature 合理范围上限（2.0 = 最大随机性，兼容 OpenAI / DeepSeek 等主流 API）。 */
+    private static final double MAX_TEMPERATURE = 2.0;
+
     /**
      * CLI 是否显式指定流式输出。
      * <p>用 Boolean 表达三态：null=未指定（沿用配置），true/false=显式覆盖。</p>
      */
     private Boolean streamOverride;
+
+    /** {@code --yolo} CLI 覆盖（仅内存，绝不写回配置文件）。 */
+    private boolean yoloOverride;
+
+    /** {@code --policy=audit} CLI 覆盖（仅内存，绝不写回配置文件）。 */
+    private boolean auditPolicyOverride;
 
     public HermesConfig(Path configPath) {
         this.configPath = configPath;
@@ -89,7 +102,7 @@ public class HermesConfig {
         Path configPath = getConfigPath();
         HermesConfig cfg = new HermesConfig(configPath);
 
-        //判断当前目录下是否存在yml文件
+        //判断当前目录下是否存在yaml文件
         if (Files.exists(configPath)) {
             cfg.config = yamlMapper.readValue(configPath.toFile(), Map.class);
         } else {
@@ -99,13 +112,22 @@ public class HermesConfig {
         return cfg;
     }
 
+    /** Diagnostics must not create or overwrite a missing user configuration. */
+    public static HermesConfig loadReadOnly() throws IOException {
+        Path path = getConfigPath();
+        Map<String, Object> values = Files.exists(path)
+                ? yamlMapper.readValue(path.toFile(), Map.class) : createDefaultConfig();
+        if (values == null) throw new IOException("配置文件为空");
+        return new HermesConfig(path, values);
+    }
+
     //保存配置文件
     private void save() throws IOException {
         Files.createDirectories(configPath.getParent());
         yamlMapper.writeValue(configPath.toFile(), config);
     }
 
-    private static Map<String, Object> createDefaultConfig() {
+    static Map<String, Object> createDefaultConfig() {
         Map<String, Object> cfg = new HashMap<>();
 
         // 配置模型
@@ -145,9 +167,12 @@ public class HermesConfig {
         extract.put("min_messages", 4);
         cfg.put("extract", extract);
 
-        // 配置工具
+        // 配置工具（P0-3 R7）
         Map<String, Object> tools = new HashMap<>();
-        tools.put("enabled", Arrays.asList("terminal", "file_operations"));
+        // disabled_toolsets: 启动时完全跳过注册的工具集列表（工具不注册，模型感知不到）。
+        // 旧默认键 tools.enabled 从未被读取（附录 A15 死配置），已删除；
+        // 旧配置文件里残留该键也无害——多余键只是被忽略（兼容性说明 CC-2）。
+        tools.put("disabled_toolsets", new ArrayList<String>());
         // 终端命令执行工具开关：默认开启；
         // 对安全敏感的用户可设 false 彻底禁用 run_command（工具不注册，模型感知不到）
         tools.put("terminal_enabled", true);
@@ -201,7 +226,24 @@ public class HermesConfig {
      */
     public List<String> listModelAliases() {
         Map<String, Object> models = getMap("models");
+
         return models.isEmpty() ? List.of() : new ArrayList<>(models.keySet());
+    }
+
+    /**
+     * 检查当前指定模型是否在文件中有列出
+     */
+    public boolean notFoundModel(String alias) {
+        if (alias == null || alias.isBlank()) {
+            return true;
+        }
+        Map<String, Object> models = getMap("models");
+        Object raw = models.get(alias);
+        if (raw == null) {
+            logger.warn("未找到模型别名 '{}'，可用别名：{}；将沿用顶层 model 配置", alias, listModelAliases());
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -247,9 +289,6 @@ public class HermesConfig {
     public boolean applyModelAlias(String alias) {
         ModelProfile profile = getModelProfile(alias);
         if (profile == null) {
-            if (alias != null && !alias.isBlank()) {
-                logger.warn("未找到模型别名 '{}'，可用别名：{}；将沿用顶层 model 配置", alias, listModelAliases());
-            }
             return false;
         }
         this.activeProfile = profile;
@@ -278,7 +317,7 @@ public class HermesConfig {
         if (temperature == null) {
             return;
         }
-        this.temperatureOverride = temperature;
+        this.temperatureOverride = clampTemperature(temperature);
     }
 
     /**
@@ -296,11 +335,65 @@ public class HermesConfig {
         return readInt("agent.max_turns", Constants.DEFAULT_MAX_ITERATIONS);
     }
 
+    /**
+     * 会话持久化保留的消息条数上限（JH-SPEC-001 P0-5 R6）。
+     *
+     * <p>超限时按「回合组」整体裁剪（见 {@link com.cyk.bean.Session}），
+     * 而非按单条从头部删——后者会切出孤立 tool 消息使请求体非法。</p>
+     *
+     * <p>不写入默认配置文件（避免扰动旧用户的 config.yaml），缺省即用
+     * {@link com.cyk.bean.Session#DEFAULT_MAX_MESSAGES}。</p>
+     */
+    public int getSessionMaxMessages() {
+        return readInt("agent.session_max_messages", com.cyk.bean.Session.DEFAULT_MAX_MESSAGES);
+    }
+
     public String getBaseUrl() {
-        if (activeProfile != null && activeProfile.baseUrl() != null) {
-            return activeProfile.baseUrl();
+        String raw = (activeProfile != null && activeProfile.baseUrl() != null)
+                ? activeProfile.baseUrl()
+                : readString("model.base_url", null);
+        return normalizeBaseUrl(raw);
+    }
+
+    /**
+     * 规范化模型服务地址，容忍用户常见误填。
+     *
+     * <p>{@code base_url} 的语义是「接口前缀」，{@code ModelClient} 会自行拼接
+     * {@code /chat/completions}。若用户把完整端点填进来，请求会变成
+     * {@code .../v1/chat/completions/chat/completions}，被网关以 405 Method Not
+     * Allowed 拒绝。这里统一做容错：</p>
+     * <ul>
+     *   <li>去掉首尾空白与末尾 {@code /}（含重复斜杠）</li>
+     *   <li>剥离误带上的 {@code /chat/completions} 后缀</li>
+     * </ul>
+     *
+     * @param raw 配置中的原始值；null/空白原样返回
+     * @return 规范化后的前缀地址
+     */
+    static String normalizeBaseUrl(String raw) {
+        if (raw == null) {
+            return null;
         }
-        return readString("model.base_url", null);
+        String url = raw.trim();
+        if (url.isEmpty()) {
+            return url;
+        }
+        // 循环剥离：兼容末尾多个斜杠（"https://x/v1//"）与重复误填后缀
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            if (url.endsWith("/")) {
+                url = url.substring(0, url.length() - 1);
+                changed = true;
+            }
+            String lower = url.toLowerCase(java.util.Locale.ROOT);
+            if (lower.endsWith("/chat/completions")) {
+                url = url.substring(0, url.length() - "/chat/completions".length());
+                changed = true;
+                logger.warn("base_url 误带了 /chat/completions 后缀，已自动修正为: {}", url);
+            }
+        }
+        return url;
     }
 
     public String getApiKey() {
@@ -323,12 +416,26 @@ public class HermesConfig {
 
     public double getTemperature() {
         if (temperatureOverride != null) {
-            return temperatureOverride;
+            return clampTemperature(temperatureOverride);
         }
         if (activeProfile != null && activeProfile.temperature() != null) {
-            return activeProfile.temperature();
+            return clampTemperature(activeProfile.temperature());
         }
-        return readDouble("agent.temperature", 0.7);
+        return clampTemperature(readDouble("agent.temperature", 0.7));
+    }
+
+    /**
+     * 将 temperature 钳制到 {@code [0.0, 2.0]} 合理范围。
+     * 越界时返回边界值并记 WARN，不抛异常——配置里写错不该让程序崩溃。
+     */
+    private static double clampTemperature(double value) {
+        if (value < MIN_TEMPERATURE || value > MAX_TEMPERATURE) {
+            double clamped = Math.max(MIN_TEMPERATURE, Math.min(MAX_TEMPERATURE, value));
+            logger.warn("temperature={} 超出合理范围 [{}, {}]，已自动调整为 {}",
+                    value, MIN_TEMPERATURE, MAX_TEMPERATURE, clamped);
+            return clamped;
+        }
+        return value;
     }
 
     public int getMaxTokens() {
@@ -371,9 +478,63 @@ public class HermesConfig {
      *
      * <p>默认开启；安全敏感用户可在 config.yaml 设 {@code tools.terminal_enabled: false}
      * 彻底禁用——工具不会注册，模型完全感知不到它的存在（比提示词约束更彻底）。</p>
+     *
+     * <p>与 {@link #getDisabledToolsets()} 的关系：两者都能关掉终端工具，
+     * 语义不同——本开关是「功能级布尔量」，disabled_toolsets 是「工具集级黑名单」，
+     * 任一命中即不注册（黑名单优先，见 {@code ToolRegistry.initialize}）。</p>
      */
     public boolean isTerminalToolEnabled() {
         return readBoolean("tools.terminal_enabled", true);
+    }
+
+    /**
+     * 已知工具集名称（与 {@code com.cyk.tool} 包中各 {@code ToolEntry.toolset} 一致）。
+     *
+     * <p>仅用于对 {@code tools.disabled_toolsets} 做拼写检查（WARN 提示），
+     * 不做硬拦截——未来新增工具集时旧版本读取新配置仍能工作（向前兼容）。</p>
+     */
+    public static final Set<String> KNOWN_TOOLSETS =
+            Set.of("file_operations", "memory", "skill", "web", "terminal", "rag");
+
+    /**
+     * 读取 {@code tools.disabled_toolsets}：启动时完全跳过注册的工具集黑名单（P0-3 R7）。
+     *
+     * <p>设计要点：</p>
+     * <ul>
+     *   <li><b>不注册的禁用</b>：被禁工具集的工具根本不进 {@code ToolRegistry}，
+     *       模型无法感知也无法调用——比提示词约束更彻底（与 terminal_enabled 同哲学）；</li>
+     *   <li><b>宽容解析</b>：键缺失 / 类型不符 / 条目空白都安全降级为空集或跳过该条目，
+     *       绝不因配置写错让启动失败；</li>
+     *   <li><b>拼写检查</b>：不在 {@link #KNOWN_TOOLSETS} 中的条目记 WARN（防
+     *       {@code file_operation} 少写 s 导致「以为禁了其实没禁」），但仍原样返回。</li>
+     * </ul>
+     *
+     * @return 工具集名称的不可变集合；未配置时返回空集（即全部启用）
+     */
+    public Set<String> getDisabledToolsets() {
+        Object raw = getFromYml("tools.disabled_toolsets", null);
+        if (raw == null) {
+            return Set.of();
+        }
+        if (!(raw instanceof List<?> list)) {
+            logger.warn("tools.disabled_toolsets 应为字符串列表，实际为 {}，已忽略该项",
+                    raw.getClass().getSimpleName());
+            return Set.of();
+        }
+        Set<String> result = new LinkedHashSet<>();
+        for (Object item : list) {
+            String name = asString(item);
+            if (name == null || name.isBlank()) {
+                continue;
+            }
+            name = name.trim();
+            if (!KNOWN_TOOLSETS.contains(name)) {
+                logger.warn("tools.disabled_toolsets 含未知工具集 '{}'（已知：{}），请检查拼写",
+                        name, KNOWN_TOOLSETS);
+            }
+            result.add(name);
+        }
+        return Collections.unmodifiableSet(result);
     }
 
     // =========================================================================
@@ -394,6 +555,139 @@ public class HermesConfig {
     public int getMinMessagesForExtraction() {
         return readInt("extract.min_messages", 1);
     }
+
+    // =========================================================================
+    // 技能配置（skill: 段）
+    // =========================================================================
+
+    /**
+     * 技能脚本执行超时（秒，JH-SPEC-001 P0-5 R10）。
+     *
+     * <p>缺省值取 {@link Constants#DEFAULT_SKILL_SCRIPT_TIMEOUT_SECONDS}，
+     * 与 {@code SkillTool} 共用同一来源以防两边漂移。</p>
+     */
+    public int getSkillScriptTimeoutSeconds() {
+        return readInt("skill.script_timeout_seconds", Constants.DEFAULT_SKILL_SCRIPT_TIMEOUT_SECONDS);
+    }
+
+    // =========================================================================
+    // 上下文压缩配置（context: 段，JH-SPEC-001 P0-4 R7）
+    // =========================================================================
+
+    /** 上下文窗口缺省大小（token）。不同模型的窗口不同，所以做成可配置项而不是写死。 */
+    public static final int DEFAULT_CONTEXT_WINDOW_TOKENS = 65_536;
+
+    /**
+     * 历史压缩总开关（{@code context.compression_enabled}，缺省 true）。
+     *
+     * <p>压缩只影响"发给模型的那一份副本"，真实历史、持久化的会话文件都不受影响，
+     * 所以默认开启是安全的；万一怀疑压缩影响了回答质量，把它设为 false 即可完全关闭。</p>
+     */
+    public boolean isContextCompressionEnabled() {
+        return readBoolean("context.compression_enabled", true);
+    }
+
+    /**
+     * 上下文窗口大小（{@code context.window_tokens}，缺省 65536）。
+     *
+     * <p>压缩的触发线和目标水位都按它的比例计算。小于 1000 的值明显是配置错误
+     * （窗口比一次系统提示词还小），这里回退到缺省值，避免压缩器行为失常。</p>
+     */
+    public int getContextWindowTokens() {
+        int value = readInt("context.window_tokens", DEFAULT_CONTEXT_WINDOW_TOKENS);
+        return value >= 1000 ? value : DEFAULT_CONTEXT_WINDOW_TOKENS;
+    }
+
+    // =========================================================================
+    // 工具定义预览：只读配置副本，不连接数据库或写入审计
+    // =========================================================================
+
+    /** Preview configured tool schemas without database or audit side effects. */
+    public HermesConfig copyForToolInspection() {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> copy = (Map<String, Object>) deepCopy(config);
+        sectionOf(copy, "rag").put("enabled", false);
+        sectionOf(copy, "security").put("audit_enabled", false);
+        return new HermesConfig(null, copy);
+    }
+
+    /** 递归深拷贝 Map / List（其余类型如字符串、数字、布尔都是不可变的，直接复用）。 */
+    private static Object deepCopy(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> copy = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                copy.put(String.valueOf(entry.getKey()), deepCopy(entry.getValue()));
+            }
+            return copy;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> copy = new ArrayList<>();
+            for (Object item : list) {
+                copy.add(deepCopy(item));
+            }
+            return copy;
+        }
+        return value;
+    }
+
+    /** 取出（不存在或类型不对时新建）某个顶层配置段，返回可直接修改的 Map。 */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> sectionOf(Map<String, Object> root, String key) {
+        Object existing = root.get(key);
+        if (existing instanceof Map) {
+            return (Map<String, Object>) existing;
+        }
+        Map<String, Object> created = new LinkedHashMap<>();
+        root.put(key, created);
+        return created;
+    }
+
+    // =========================================================================
+    // 命令安全（JH-SPEC-001 P0-2）
+    // =========================================================================
+
+    /**
+     * {@code --yolo} 是否开启（P0-2 R8）。
+     *
+     * <p><b>仅命令行参数</b>，不写入配置文件、不读环境变量——这是 R8 的硬约束，
+     * 防止用户在 config.yaml 或 shell profile 里永久开启而不自知。
+     * 跳过 WRITE 确认，但<b>不</b>跳过 DANGEROUS 强确认、不影响 BLOCKED。</p>
+     */
+    public boolean isYolo() {
+        return yoloOverride;
+    }
+
+    /** CLI 运行期注入（{@code --yolo}）；仅内存生效。 */
+    public void setYolo(boolean yolo) {
+        this.yoloOverride = yolo;
+    }
+
+    /**
+     * {@code --policy=audit} 是否开启：只分类与记录、不拦截（P0-2 风险缓解，排查误杀）。
+     *
+     * <p><b>仅命令行参数</b>，不入配置、不读环境变量（与 --yolo 同理）。默认关闭。</p>
+     */
+    public boolean isAuditPolicyOnly() {
+        return auditPolicyOverride;
+    }
+
+    /** CLI 运行期注入（{@code --policy=audit}）；仅内存生效。 */
+    public void setAuditPolicyOnly(boolean auditOnly) {
+        this.auditPolicyOverride = auditOnly;
+    }
+
+    /** 审计开关（{@code security.audit_enabled}，缺省 true）。 */
+    public boolean isAuditEnabled() {
+        return readBoolean("security.audit_enabled", true);
+    }
+
+    /** 审计保留天数（{@code security.audit_retention_days}，缺省 30）。 */
+    public int getAuditRetentionDays() {
+        return readInt("security.audit_retention_days", DEFAULT_AUDIT_RETENTION_DAYS);
+    }
+
+    /** 审计保留天数缺省值（与 {@link com.cyk.security.AuditLogger#DEFAULT_RETENTION_DAYS} 一致）。 */
+    public static final int DEFAULT_AUDIT_RETENTION_DAYS = 30;
 
     // =========================================================================
     // 底层读取：类型安全的取值 + 数值强转
@@ -509,9 +803,6 @@ public class HermesConfig {
             }
         }
         Object result = current.get(keys[keys.length - 1]);
-        if (result != null && defaultValue != null) {
-            return (T) result;
-        }
         return result != null ? (T) result : defaultValue;
     }
 }

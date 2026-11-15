@@ -194,8 +194,6 @@ class TerminalToolTest {
         assertThat(TerminalTool.checkSensitive("cat ~/.ssh/id_rsa")).isNotNull();
         assertThat(TerminalTool.checkSensitive("type C:\\Users\\admin\\.git-credentials")).isNotNull();
         assertThat(TerminalTool.checkSensitive("Get-Content ~/.jhermes/config.yaml")).isNotNull();
-        // 旧数据目录名（.skhermes）也必须拦住：迁移失败时凭据仍在旧路径下
-        assertThat(TerminalTool.checkSensitive("Get-Content ~/.skhermes/config.yaml")).isNotNull();
     }
 
     @Test

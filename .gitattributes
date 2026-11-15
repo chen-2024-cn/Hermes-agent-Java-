@@ -1,0 +1,8 @@
+# Maven Wrapper 的 Unix 脚本必须是 LF 行尾：
+# 若在 Windows 上被 git 转成 CRLF，Linux/macOS 上 shebang 解析失败，CI 直接报
+# "mvnw: No such file or directory"。此处强制各平台检出统一为 LF。
+Jhermes/mvnw text eol=lf
+
+# Windows 批处理脚本必须 CRLF，cmd.exe 对 LF 脚本的 goto/label 解析不可靠
+*.cmd text eol=crlf
+*.bat text eol=crlf

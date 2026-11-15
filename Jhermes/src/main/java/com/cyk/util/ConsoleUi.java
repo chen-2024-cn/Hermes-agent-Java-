@@ -1,5 +1,7 @@
 package com.cyk.util;
 
+import com.cyk.constant.Constants;
+
 import java.util.function.Consumer;
 
 /**
@@ -117,10 +119,10 @@ public final class ConsoleUi {
     /**
      * 生成「助手回答」前缀。
      *
-     * <p>青色「◆ Hermes:」标签，与绿色的用户提示符形成鲜明的颜色 + 符号双重区分。</p>
+     * <p>青色「◆ {CLI_NAME}」标签，与绿色的用户提示符形成鲜明的颜色 + 符号双重区分。</p>
      */
     public static String assistantPrefix() {
-        return "\n" + color("◆ ", "1;36") + color("Hermes:", "1;36") + "\n";
+        return "\n" + color("◆ ", "1;36") + color(Constants.CLI_NAME, "1;36") + "\n";
     }
 
     /** 工具执行等次要信息的淡化前缀（暗灰），弱化视觉权重 */
