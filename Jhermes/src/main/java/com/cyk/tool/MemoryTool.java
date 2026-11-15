@@ -47,7 +47,7 @@ public class MemoryTool {
                 .name("memory_save")
                 .toolset("memory")
                 .schema(Map.of(
-                        "description", "Save a durable fact to memory. Use category='memory' for environment/learned info, 'user' for user preferences.",
+                        "description", "Save a durable fact to memory.",
                         "parameters", Map.of(
                                 "type", "object",
                                 "properties", Map.of(

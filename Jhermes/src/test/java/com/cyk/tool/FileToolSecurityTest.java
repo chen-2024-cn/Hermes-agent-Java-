@@ -52,10 +52,8 @@ class FileToolSecurityTest {
     }
 
     @Test
-    void readFileShouldBlockHermesConfigBothDirNames() throws Exception {
-        // 新旧数据目录都要拦：迁移失败时凭据仍在旧的 .skhermes 下
+    void readFileShouldBlockHermesConfig() throws Exception {
         assertBlockedBySensitive(FileTool.readFile(Map.of("path", Paths.get(HOME, ".jhermes", "config.yaml").toString())));
-        assertBlockedBySensitive(FileTool.readFile(Map.of("path", Paths.get(HOME, ".skhermes", "config.yaml").toString())));
     }
 
     @Test

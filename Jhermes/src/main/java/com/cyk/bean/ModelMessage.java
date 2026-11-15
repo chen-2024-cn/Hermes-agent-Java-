@@ -45,6 +45,32 @@ public class ModelMessage {
         return new ModelMessage("user", content);
     }
 
+    public static ModelMessage userMultimodal(String text, List<String> images) {
+        ModelMessage message = user(text);
+        if (images == null || images.isEmpty()) return message;
+        List<ContentPart> parts = new ArrayList<>();
+        if (text != null && !text.isBlank()) parts.add(ContentPart.text(text));
+        images.forEach(url -> parts.add(ContentPart.image(url)));
+        message.setContentParts(parts);
+        return message;
+    }
+
+    /** Safe projection for learning/diagnostics, without duplicating image payloads. */
+    public ModelMessage textOnlyCopy() {
+        ModelMessage copy = new ModelMessage(role, content);
+        copy.setName(name);
+        copy.setToolCallId(toolCallId);
+        copy.setToolCalls(toolCalls);
+        long images = imageCount();
+        if (images > 0) copy.setContent((content == null ? "" : content) + "\n[附 " + images + " 张图片]");
+        return copy;
+    }
+
+    public long imageCount() {
+        return contentParts == null ? 0 : contentParts.stream()
+                .filter(part -> "image_url".equals(part.getType())).count();
+    }
+
     public static ModelMessage assistant(String content) {
         return new ModelMessage("assistant", content);
     }
@@ -81,7 +107,9 @@ public class ModelMessage {
     public JsonNode toJsonNode() {
         ObjectNode json = MAPPER.createObjectNode();
         json.put("role", role);
-        if (content != null) {
+        if (contentParts != null && !contentParts.isEmpty()) {
+            json.set("content", MAPPER.valueToTree(contentParts));
+        } else if (content != null) {
             json.put("content", content);
         }
         if (name != null) {

@@ -62,18 +62,17 @@ public final class SecurityRuleSet {
      * @param config 用于定位 HERMES_HOME；null 时只加载内置默认
      */
     public static SecurityRuleSet load(HermesConfig config) {
-        List<CommandRule> defaults = loadDefault();
         if (config == null) {
-            return new SecurityRuleSet(defaults);
+            return loadDefaultOnly();
         }
-        Path userFile = Constants.getHermesHome().resolve(USER_RULES_RELATIVE);
-        List<CommandRule> merged = mergeWithUserOverlay(defaults, userFile);
-        return new SecurityRuleSet(merged);
+        return loadForHome(Constants.getHermesHome());
     }
 
-    /**
-     * 仅加载内置默认（测试与用户覆盖不可用时使用）。
-     */
+    /** Effective rules without loading model credentials or initializing audit/confirmation. */
+    public static SecurityRuleSet loadForHome(Path home) {
+        return new SecurityRuleSet(mergeWithUserOverlay(loadDefault(), home.resolve(USER_RULES_RELATIVE)));
+    }
+
     public static SecurityRuleSet loadDefaultOnly() {
         return new SecurityRuleSet(loadDefault());
     }

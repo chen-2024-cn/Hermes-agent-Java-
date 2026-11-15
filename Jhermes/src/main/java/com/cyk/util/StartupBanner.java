@@ -4,7 +4,8 @@ package com.cyk.util;
  * <h1>启动横幅（Startup Banner）</h1>
  *
  * <p>程序启动时打印<b>一次</b>的品牌横幅：ASCII Art 标题（图字）+ 渐变色渲染
- * + 版本标语。渲染完全由本类负责，业务侧只需调用 {@link #print(String)}。</p>
+ * + 版本标语。静态渲染由本类负责；{@link #print(String)} 经 {@link BannerAnimation}
+ * 按终端尺寸组合右侧启动动图，业务侧仍只调用同一打印入口。</p>
  *
  * <h2>三条设计红线（对应「无乱码、无错位」的验收要求）</h2>
  * <ol>
@@ -91,8 +92,12 @@ public final class StartupBanner {
      * @param version 版本号字符串（如 "2.1.0"），拼入标语行；null/空白则不显示版本段
      */
     public static void print(String version) {
-        System.out.println(render(version));
-        System.out.flush();
+        BannerAnimation.print(version);
+    }
+
+    /** Startup information joins the first editable prompt in supported terminals. */
+    public static void print(String version, java.util.List<String> startupLines) {
+        BannerAnimation.print(version, startupLines);
     }
 
     /**

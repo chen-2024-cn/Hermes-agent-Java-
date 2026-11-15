@@ -98,6 +98,10 @@ public class SessionManager {
      * 这也是原子写工具的额外好处：先构造完整内容再落盘，避免「写到一半发现序列化错误」。
      */
     public void saveSession(Session session) throws IOException {
+        if (session.messages.stream().noneMatch(message -> message != null && message.role() != null
+                && !"system".equals(message.role()))) {
+            return;
+        }
         Path sessionFile = sessionsDir.resolve(session.id + ".json");
         // 先序列化为完整 JSON 字符串（含缩进便于人工排查），再原子写入
         String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(session.toJson());
@@ -116,6 +120,33 @@ public class SessionManager {
         }
         return Files.exists(sessionsDir.resolve(sessionId + ".json"));
     }
+
+    /** Strict user-selected resume does not turn corrupt or escaped paths into new empty sessions. */
+    public Session readExisting(String id) throws IOException {
+        if (id == null || !id.matches("[A-Za-z0-9][A-Za-z0-9_-]{0,127}")) {
+            throw new IOException("会话ID无效, 请使用 /sessions 列出的ID。");
+        }
+        Path file = sessionsDir.resolve(id + ".json");
+        if (!Files.isRegularFile(file, java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                || Files.isSymbolicLink(file) || !file.toRealPath().getParent().equals(sessionsDir.toRealPath())) {
+            throw new IOException("会话不存在或路径不安全: " + id);
+        }
+        try {
+            var node = mapper.readTree(file.toFile());
+            if (!(node instanceof ObjectNode json) || !json.path("messages").isArray()) {
+                throw new IOException("会话文件损坏: " + id);
+            }
+            Session session = Session.fromJson(id, json);
+            if (!session.hasUserInput()) throw new IOException("会话没有已提交的用户消息: " + id);
+            session.setMaxMessages(maxMessages);
+            return session;
+        } catch (RuntimeException e) {
+            throw new IOException("会话文件损坏: " + id);
+        }
+    }
+
+    /** Install a strictly read snapshot only when a conversation switch commits. */
+    public void useLoadedSession(Session session) { activeSessions.put(session.id, session); }
 
     /**
      * 列出全部已持久化会话，按 lastActivity 降序（最近的在前）。
@@ -138,7 +169,10 @@ public class SessionManager {
                 String id = file.getFileName().toString().replaceFirst("\\.json$", "");
                 try {
                     ObjectNode json = (ObjectNode) mapper.readTree(file.toFile());
-                    result.add(Session.fromJson(id, json));
+                    Session session = Session.fromJson(id, json);
+                    if (session.hasUserInput()) {
+                        result.add(session);
+                    }
                 } catch (Exception e) {
                     logger.warn("跳过损坏的会话文件 {}: {}", file.getFileName(), e.getMessage());
                 }

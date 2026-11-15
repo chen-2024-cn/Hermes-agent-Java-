@@ -9,7 +9,7 @@
          Constants.VERSION 与 picocli 版本输出均从该文件读取；
          发布工作流的 tag / 产物名也由 pom 派生校验（release-upload.yml）。
          历史教训：版本曾在 Constants(2.1.0) / pom(1.0-SNAPSHOT) / tag(v2.1.0) 三处漂移。 -->
-    <version>2.1.0</version>
+    <version>2.2.0</version>
     <packaging>jar</packaging>
 
     <name>Jhermes</name>
@@ -26,6 +26,7 @@
         <snakeyaml.version>2.2</snakeyaml.version>
         <picocli.version>4.7.5</picocli.version>
         <jsoup.version>1.17.2</jsoup.version>
+        <jline.version>3.30.0</jline.version>
     </properties>
 
     <dependencies>
@@ -34,6 +35,23 @@
             <groupId>info.picocli</groupId>
             <artifactId>picocli</artifactId>
             <version>${picocli.version}</version>
+        </dependency>
+        <!-- Interactive input: bracketed paste and Windows native terminal support -->
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-reader</artifactId>
+            <version>${jline.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-terminal-jni</artifactId>
+            <version>${jline.version}</version>
+        </dependency>
+        <!-- Windows explicit paste gestures; no terminal settings are changed. -->
+        <dependency>
+            <groupId>net.java.dev.jna</groupId>
+            <artifactId>jna-platform</artifactId>
+            <version>5.17.0</version>
         </dependency>
         <!-- YAML Configuration -->
         <dependency>
@@ -214,6 +232,7 @@
                                 </filter>
                             </filters>
                             <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                                 <transformer
                                         implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>com.cyk.HermesAgent</mainClass>

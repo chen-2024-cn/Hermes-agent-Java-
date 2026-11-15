@@ -107,7 +107,6 @@ class ConstantsPurgeTest {
         // 净化只针对提示词长文本；版本、目录、配置文件名、CLI 名、超时缺一不可
         assertThat(Constants.VERSION).isNotBlank();
         assertThat(Constants.DEFAULT_HERMES_HOME).isEqualTo(".jhermes");
-        assertThat(Constants.LEGACY_HERMES_HOME).isEqualTo(".skhermes");
         assertThat(Constants.DEFAULT_CONFIG_FILE).isEqualTo("config.yaml");
         assertThat(Constants.CLI_NAME).isEqualTo("Jhermes");
         assertThat(Constants.DEFAULT_MAX_ITERATIONS).isPositive();

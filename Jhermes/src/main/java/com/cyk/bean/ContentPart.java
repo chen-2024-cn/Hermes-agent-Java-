@@ -1,11 +1,16 @@
 package com.cyk.bean;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 /**
      * Content part for multimodal messages.
      */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     public class ContentPart {
         private String type;
         private String text;
+        @JsonProperty("image_url")
         private ImageUrl imageUrl;
 
         public ContentPart() {}

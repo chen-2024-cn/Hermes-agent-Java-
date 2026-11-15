@@ -35,6 +35,11 @@ public interface ConfirmationProvider {
      */
     Approval request(PolicyDecision decision);
 
+    /** Optional explanation metadata; old providers and functional implementations remain compatible. */
+    default Approval request(PolicyDecision decision, ApprovalContext context) {
+        return request(decision);
+    }
+
     /**
      * 非交互闸门：任何需要确认的命令一律拒绝（PIPE/CI 场景，P1-2 R4）。
      *

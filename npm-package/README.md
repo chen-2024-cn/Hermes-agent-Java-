@@ -29,19 +29,19 @@ jar 托管在 GitHub Release，**直连实测仅 ~95 KB/s**（45 MB 要 8 分钟
 
 ```powershell
 # PowerShell
-$env:JHERMES_JAR_URL = "https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.1.0/hermes.jar"
+$env:JHERMES_JAR_URL = "https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.2.0/hermes.jar"
 npm install -g j-hermes
 ```
 
 ```bat
 :: CMD
-set JHERMES_JAR_URL=https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.1.0/hermes.jar
+set JHERMES_JAR_URL=https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.2.0/hermes.jar
 npm install -g j-hermes
 ```
 
 ```bash
 # bash / zsh
-export JHERMES_JAR_URL="https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.1.0/hermes.jar"
+export JHERMES_JAR_URL="https://gh-proxy.com/https://github.com/chen-2024-cn/Hermes-agent-Java-/releases/download/v2.2.0/hermes.jar"
 npm i -g j-hermes
 ```
 
@@ -55,8 +55,9 @@ npm i -g j-hermes
 Jhermes              # 在当前目录直接进入对话，模型以当前目录为项目根
 Jhermes -m fast      # 指定模型别名
 Jhermes -s           # 开启流式输出
-Jhermes --help       # 查看全部子命令（chat / sessions / resume）
+Jhermes --help       # 查看命令（chat / sessions / resume / debug）
 Jhermes chat         # 显式使用 chat 子命令
+Jhermes debug tools-json  # 查看工具定义，不调用模型
 ```
 
 首次运行会自动下载 hermes.jar（约 45 MB），之后直接启动。

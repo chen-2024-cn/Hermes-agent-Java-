@@ -1,6 +1,5 @@
 package com.cyk;
 
-import com.cyk.command.AuditCommand;
 import com.cyk.command.ChatCommand;
 import com.cyk.command.ChatRunner;
 import com.cyk.command.ResumeCommand;
@@ -21,8 +20,7 @@ import java.util.concurrent.Callable;
                 ChatCommand.class,
                 SessionsCommand.class,
                 ResumeCommand.class,
-                AuditCommand.class,
-                com.cyk.command.SecurityCommand.class
+                com.cyk.command.DebugCommand.class
         })
 public class HermesAgent implements Callable<Integer> {
 
@@ -89,13 +87,32 @@ public class HermesAgent implements Callable<Integer> {
                 ChatRunner.resolveStream(stream, noStream), null);
     }
 
-    public static void main(String[] args) throws IOException {
-        int execute = new CommandLine(new HermesAgent())
-                .setExecutionExceptionHandler((ex, commandLine, parseResult) -> {
-                    System.err.println("执行异常" + ex.getMessage());
-                    return 1;
+    /** Shared CLI configuration keeps unknown commands invalid even alongside --help. */
+    public static CommandLine commandLine() {
+        return new CommandLine(new HermesAgent())
+                .setExecutionStrategy(parseResult -> {
+                    for (CommandLine.ParseResult current = parseResult; current != null; current = current.subcommand()) {
+                        if (!current.unmatched().isEmpty()) {
+                            throw new CommandLine.ParameterException(current.commandSpec().commandLine(),
+                                    "未知命令或参数: " + String.join(" ", current.unmatched()));
+                        }
+                    }
+                    return new CommandLine.RunLast().execute(parseResult);
                 })
-                .execute(args);
+                .setParameterExceptionHandler((ex, args1) -> {
+                    CommandLine command = ex.getCommandLine();
+                    command.getErr().println("参数错误: " + ex.getMessage());
+                    command.getErr().println("查看用法: " + command.getCommandSpec().qualifiedName() + " --help");
+                    return 2;
+                })
+                .setExecutionExceptionHandler((ex, commandLine, parseResult) -> {
+                    commandLine.getErr().println("执行失败: " + ex.getMessage());
+                    return 1;
+                });
+    }
+
+    public static void main(String[] args) throws IOException {
+        int execute = commandLine().execute(args);
 
         logger.debug("已退出");
         System.exit(execute);

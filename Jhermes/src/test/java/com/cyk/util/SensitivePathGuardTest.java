@@ -46,8 +46,6 @@ class SensitivePathGuardTest {
         // 真实事故来源：2026-09-28 模型 Get-Content 了 .meta.json 导致 Feishu token 进对话历史
         assertThat(SensitivePathGuard.check("Get-Content C:\\Users\\admin\\.ai_tools\\.meta.json -Raw")).isNotNull();
         assertThat(SensitivePathGuard.check("cat ~/.jhermes/config.yaml")).isNotNull();
-        // 旧目录名必须同样拦截：迁移失败/两目录并存时凭据仍在旧路径，只拦新名等于留口子
-        assertThat(SensitivePathGuard.check("cat ~/.skhermes/config.yaml")).isNotNull();
         assertThat(SensitivePathGuard.checkPath(Paths.get(HOME, ".jhermes", "config.yaml"))).isNotNull();
     }
 

@@ -14,6 +14,7 @@ import java.util.concurrent.Callable;
  */
 @CommandLine.Command(name = "resume", description = "恢复历史会话继续对话")
 public class  ResumeCommand implements Callable<Integer> {
+    @CommandLine.Mixin private CommandHelp help;
 
     @CommandLine.Option(names = {"-m", "--model"}, description = "模型别名（config.yaml 的 models 段）或模型名")
     private String model;
@@ -49,22 +50,10 @@ public class  ResumeCommand implements Callable<Integer> {
         try {
             SessionManager manager = new SessionManager(Constants.getHermesHome());
 
-            // 确定要恢复的会话 id：显式传入 > --last/省略（取最近一次）
-            String target = sessionId;
-            if ((target == null || target.isBlank()) || last) {
-                var sessions = manager.listSessions();
-                if (sessions.isEmpty()) {
-                    System.out.println("暂无可恢复的历史会话。运行 `" + Constants.CLI_NAME
-                            + " chat` 开始对话。");
-                    return 0;
-                }
-                target = sessions.get(0).id; // listSessions 已按最近活跃降序
-            }
-
-            if (!manager.sessionExists(target)) {
-                System.err.println("会话不存在：" + target);
-                System.err.println("运行 `" + Constants.CLI_NAME + " sessions` 查看全部可用会话。");
-                return 1;
+            String target = SessionSelection.resolve(manager, sessionId, last);
+            if (target == null) {
+                System.out.println("暂无可恢复的历史会话。运行 `" + Constants.CLI_NAME + " chat` 开始对话。");
+                return 0;
             }
 
             System.out.println("恢复会话：" + target);

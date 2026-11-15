@@ -159,7 +159,7 @@ public class TrajectoryCollector {
             logger.warn("addMessage called for unknown sessionId: {}", sessionId);
             return;
         }
-        trajectorySession.addMessage(message);//放入聊天对象
+        trajectorySession.addMessage(message.textOnlyCopy());//学习轨迹不重复存储图片原文
     }
 
     /**
@@ -168,9 +168,18 @@ public class TrajectoryCollector {
     public void endSession(String sessionId, boolean completed) {
         //从map中移除要结束的会话
         TrajectorySession trajectorySession = activeSessions.remove(sessionId);
+        if (trajectorySession == null || trajectorySession.getMessages().stream().noneMatch(message ->
+                com.cyk.bean.Message.hasUserInput(message.getRole(), message.getContent(), message.getContentParts()))) {
+            return;
+        }
         TrajectoryEntry trajectoryEntry = trajectorySession.toEntry(completed);
         //将聊天信息放入队列
         pendingTrajectories.offer(trajectoryEntry);
+    }
+
+    /** Release an idle run without creating a learning sample. */
+    public void discardSession(String sessionId) {
+        activeSessions.remove(sessionId);
     }
 
     /**

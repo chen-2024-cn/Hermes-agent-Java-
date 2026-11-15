@@ -158,6 +158,11 @@ public class Session {
             return problems;
         }
         
+        /** Shared eligibility for history lists and default resume selection. */
+        public boolean hasUserInput() {
+            return messages.stream().anyMatch(message -> message != null && message.hasUserInput());
+        }
+
         public void setMetadata(String key, Object value) {
             metadata.put(key, value);
         }
@@ -187,6 +192,9 @@ public class Session {
                 // content 可为 null（assistant 仅发起工具调用时），与 ModelMessage.toJsonNode 语义一致地省略该键
                 if (msg.content() != null) {
                     msgJson.put("content", msg.content());
+                }
+                if (msg.contentParts() != null && !msg.contentParts().isEmpty()) {
+                    msgJson.set("content_parts", MAPPER.valueToTree(msg.contentParts()));
                 }
                 msgJson.put("timestamp", msg.timestamp());
                 // P0-5 R5：工具字段仅在非空时写入，旧文件不会产生新键（CC-2 向后兼容）
@@ -235,11 +243,16 @@ public class Session {
                         toolCalls = null;
                     }
                 }
+                List<ContentPart> parts = null;
+                if (msgNode.path("content_parts").isArray()) {
+                    parts = MAPPER.convertValue(msgNode.path("content_parts"),
+                            new TypeReference<List<ContentPart>>() {});
+                }
                 session.messages.add(new Message(
                     msgNode.path("role").asText(),
                     msgNode.path("content").asText(null),
                     msgNode.path("timestamp").asLong(),
-                    name, toolCallId, toolCalls
+                    name, toolCallId, toolCalls, parts
                 ));
             }
             // 旧文件可能本就超限（历史上限不同），载入后统一整一次

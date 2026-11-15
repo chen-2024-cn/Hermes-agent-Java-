@@ -112,6 +112,15 @@ public class HermesConfig {
         return cfg;
     }
 
+    /** Diagnostics must not create or overwrite a missing user configuration. */
+    public static HermesConfig loadReadOnly() throws IOException {
+        Path path = getConfigPath();
+        Map<String, Object> values = Files.exists(path)
+                ? yamlMapper.readValue(path.toFile(), Map.class) : createDefaultConfig();
+        if (values == null) throw new IOException("配置文件为空");
+        return new HermesConfig(path, values);
+    }
+
     //保存配置文件
     private void save() throws IOException {
         Files.createDirectories(configPath.getParent());
@@ -559,6 +568,78 @@ public class HermesConfig {
      */
     public int getSkillScriptTimeoutSeconds() {
         return readInt("skill.script_timeout_seconds", Constants.DEFAULT_SKILL_SCRIPT_TIMEOUT_SECONDS);
+    }
+
+    // =========================================================================
+    // 上下文压缩配置（context: 段，JH-SPEC-001 P0-4 R7）
+    // =========================================================================
+
+    /** 上下文窗口缺省大小（token）。不同模型的窗口不同，所以做成可配置项而不是写死。 */
+    public static final int DEFAULT_CONTEXT_WINDOW_TOKENS = 65_536;
+
+    /**
+     * 历史压缩总开关（{@code context.compression_enabled}，缺省 true）。
+     *
+     * <p>压缩只影响"发给模型的那一份副本"，真实历史、持久化的会话文件都不受影响，
+     * 所以默认开启是安全的；万一怀疑压缩影响了回答质量，把它设为 false 即可完全关闭。</p>
+     */
+    public boolean isContextCompressionEnabled() {
+        return readBoolean("context.compression_enabled", true);
+    }
+
+    /**
+     * 上下文窗口大小（{@code context.window_tokens}，缺省 65536）。
+     *
+     * <p>压缩的触发线和目标水位都按它的比例计算。小于 1000 的值明显是配置错误
+     * （窗口比一次系统提示词还小），这里回退到缺省值，避免压缩器行为失常。</p>
+     */
+    public int getContextWindowTokens() {
+        int value = readInt("context.window_tokens", DEFAULT_CONTEXT_WINDOW_TOKENS);
+        return value >= 1000 ? value : DEFAULT_CONTEXT_WINDOW_TOKENS;
+    }
+
+    // =========================================================================
+    // 工具定义预览：只读配置副本，不连接数据库或写入审计
+    // =========================================================================
+
+    /** Preview configured tool schemas without database or audit side effects. */
+    public HermesConfig copyForToolInspection() {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> copy = (Map<String, Object>) deepCopy(config);
+        sectionOf(copy, "rag").put("enabled", false);
+        sectionOf(copy, "security").put("audit_enabled", false);
+        return new HermesConfig(null, copy);
+    }
+
+    /** 递归深拷贝 Map / List（其余类型如字符串、数字、布尔都是不可变的，直接复用）。 */
+    private static Object deepCopy(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> copy = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                copy.put(String.valueOf(entry.getKey()), deepCopy(entry.getValue()));
+            }
+            return copy;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> copy = new ArrayList<>();
+            for (Object item : list) {
+                copy.add(deepCopy(item));
+            }
+            return copy;
+        }
+        return value;
+    }
+
+    /** 取出（不存在或类型不对时新建）某个顶层配置段，返回可直接修改的 Map。 */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> sectionOf(Map<String, Object> root, String key) {
+        Object existing = root.get(key);
+        if (existing instanceof Map) {
+            return (Map<String, Object>) existing;
+        }
+        Map<String, Object> created = new LinkedHashMap<>();
+        root.put(key, created);
+        return created;
     }
 
     // =========================================================================

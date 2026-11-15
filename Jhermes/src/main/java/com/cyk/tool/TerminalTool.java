@@ -105,6 +105,8 @@ public class TerminalTool {
         COMMAND_COUNTS.clear();
     }
 
+    public static void resetConversationCounts() { COMMAND_COUNTS.clear(); }
+
     /**
      * 重复护栏的命令归一化：小写化 + 连续空白压缩为单空格。
      *
@@ -305,7 +307,8 @@ public class TerminalTool {
                 approvalLabel = "yolo";
             } else {
                 com.cyk.security.ConfirmationProvider.Approval approval =
-                    com.cyk.security.SecurityContext.confirmation().request(decision);
+                    com.cyk.security.SecurityContext.confirmation().request(decision,
+                        com.cyk.security.ApprovalContext.forCommand(args, workDir));
                 if (approval != com.cyk.security.ConfirmationProvider.Approval.ALLOW) {
                     boolean interactive = Ui.userInput().isInteractive();
                     audit(command, segTexts(decision), decision.level(), decision.matchedRuleIds(),
@@ -591,24 +594,20 @@ public class TerminalTool {
             .name("run_command")
             .toolset("terminal")
             .schema(Map.of(
-                "description", "在用户本机终端执行 shell 命令并返回输出。"
-                    + "适用于：查询系统信息（时间/进程/端口/磁盘）、执行构建与测试（mvn/npm/pytest）、"
-                    + "数据库操作（psql/mysql）、git 操作、运行脚本等。"
-                    + "Windows 默认 PowerShell（多命令用 ; 分隔，不要用 &&），可用 shell 参数切换 cmd；"
-                    + "Linux/macOS 默认 bash。系统级灾难命令（格式化磁盘、删根目录、关机等）会被自动拦截；"
-                    + "数据级破坏操作（删库、批量删文件）执行前必须先向用户说明影响并获得确认。",
+                "description", "执行本机shell命令并返回输出。填写目的和预期结果供宿主确认；系统级灾难操作硬拦，写入/高危操作按策略确认。",
                 "parameters", Map.of(
                     "type", "object",
                     "properties", Map.of(
                         "command", Map.of("type", "string",
                             "description", "要执行的完整命令串"),
                         "workdir", Map.of("type", "string",
-                            "description", "工作目录（绝对路径），缺省为用户启动 Jhermes 时所在目录"),
+                            "description", "工作目录（绝对路径），缺省为启动目录"),
                         "timeout_seconds", Map.of("type", "integer",
-                            "description", "超时秒数，默认 30，上限 300；构建/测试等长耗时命令建议 120"),
+                            "description", "超时秒数，默认 30，上限 300"),
                         "shell", Map.of("type", "string",
-                            "description", "指定 shell：Windows 可选 cmd（默认 powershell）；"
-                                + "Linux/macOS 可选 sh（默认 bash）")),
+                            "description", "Windows可选cmd，Unix可选sh"),
+                        "purpose", Map.of("type", "string", "description", "一句话说明操作目的"),
+                        "expected_result", Map.of("type", "string", "description", "一句话说明预期结果，不是已完成结果")),
                     "required", List.of("command"))))
             .handler(TerminalTool::runCommand)
             .emoji("💻")

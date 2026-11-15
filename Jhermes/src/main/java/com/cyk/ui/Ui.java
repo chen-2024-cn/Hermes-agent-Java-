@@ -63,6 +63,23 @@ public final class Ui {
         diagStream.println(line);
     }
 
+    /** Initialize before Agent builds the confirmation provider; tests keep their injected input. */
+    public static synchronized void initializeInteractiveInput() {
+        if (!(userInput instanceof UserInput.ConsoleUserInput) || System.console() == null) return;
+        try {
+            org.jline.terminal.Terminal terminal;
+            if (System.getProperty("os.name", "").startsWith("Windows")) {
+                terminal = WindowsVtTerminal.create();
+            } else {
+                terminal = org.jline.terminal.TerminalBuilder.builder()
+                        .system(true).dumb(false).encoding(java.nio.charset.StandardCharsets.UTF_8).build();
+            }
+            userInput = new JLineUserInput(terminal, ClipboardReader.system());
+        } catch (Exception | LinkageError e) {
+            diagln("高级终端输入不可用, 使用 /paste 或 /multiline 安全输入多行文字");
+        }
+    }
+
     /** @return 进程级共享的输入通道（REPL 与确认闸门共用） */
     public static UserInput userInput() {
         return userInput;

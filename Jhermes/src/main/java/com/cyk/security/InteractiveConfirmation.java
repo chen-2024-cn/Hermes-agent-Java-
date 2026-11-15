@@ -43,6 +43,11 @@ public final class InteractiveConfirmation implements ConfirmationProvider {
 
     @Override
     public Approval request(PolicyDecision decision) {
+        return request(decision, ApprovalContext.unspecified());
+    }
+
+    @Override
+    public Approval request(PolicyDecision decision, ApprovalContext context) {
         // READ_ONLY 自动放行
         if (decision.isAutoAllowed()) {
             return Approval.ALLOW;
@@ -61,25 +66,32 @@ public final class InteractiveConfirmation implements ConfirmationProvider {
             return Approval.DENY;
         }
 
-        showCommand(decision);
+        showCommand(decision, context == null ? ApprovalContext.unspecified() : context);
         return decision.needsStrongConfirmation()
                 ? askStrongConfirmation(decision)
                 : askWriteConfirmation(decision);
     }
 
     /** 展示命令、级别、理由、命中规则（对齐规范 §14.1 目标体验）。 */
-    private void showCommand(PolicyDecision decision) {
+    private void showCommand(PolicyDecision decision, ApprovalContext context) {
         Ui.out().println();
         Ui.out().println(ConsoleUi.dimPrefix() + "待确认命令");
         Ui.out().println("  级别: " + decision.level() + (decision.level() == CommandLevel.DANGEROUS
                 ? "（高危）" : "") + (decision.unparseable() ? " · 含无法可靠解析部分" : ""));
-        Ui.out().println("  命令: " + decision.normalizedCommand());
+        Ui.out().println("  命令: " + ApprovalContext.safeCommand(decision.normalizedCommand()));
+        Ui.out().println("  目的: " + context.purpose());
+        Ui.out().println("  预期结果: " + context.expectedResult());
+        if (!context.workdir().isBlank()) Ui.out().println("  目录: " + context.workdir());
+        if (!context.impact().isBlank()) Ui.out().println("  影响: " + context.impact());
+        Ui.out().println("  说明来源: " + context.source());
         if (decision.reason() != null && !decision.reason().isBlank()) {
-            Ui.out().println("  理由: " + decision.reason());
+            Ui.out().println("  风险理由: " + ApprovalContext.explanation(decision.reason(), ""));
         }
         if (!decision.matchedRuleIds().isEmpty()) {
-            Ui.out().println("  规则: " + String.join(", ", decision.matchedRuleIds()));
+            Ui.out().println("  规则: " + ApprovalContext.explanation(String.join(", ", decision.matchedRuleIds()), ""));
         }
+        Ui.out().println("  预期结果尚未发生，以实际执行输出为准。");
+        Ui.out().flush();
     }
 
     /** WRITE：y/n/a。 */

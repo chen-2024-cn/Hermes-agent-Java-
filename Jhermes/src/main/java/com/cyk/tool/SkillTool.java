@@ -51,26 +51,26 @@ public class SkillTool {
                 .name("skill_manage")
                 .toolset("skill")
                 .schema(Map.of(
-                        "description", "Manage skills — save, get, list, search, or delete reusable skills. Use this to persist useful workflows, patterns, or knowledge for future sessions.",
+                        "description", "Manage reusable skills: save, get, list, search, delete.",
                         "parameters", Map.of(
                                 "type", "object",
                                 "properties", Map.of(
                                         "action", Map.of(
                                                 "type", "string",
                                                 "enum", List.of("save", "get", "list", "search", "delete"),
-                                                "description", "Action: 'save' to create/update a skill (requires name+content), 'get' to retrieve by name, 'list' to show all, 'search' to find by query, 'delete' to remove by name"
+                                                "description", "save needs name+content; get/delete need name; search needs query"
                                         ),
                                         "name", Map.of(
                                                 "type", "string",
-                                                "description", "Skill name in kebab-case (e.g., 'deploy-spring-boot'). Required for save/get/delete."
+                                                "description", "Skill name in kebab-case, e.g. 'deploy-spring-boot'"
                                         ),
                                         "content", Map.of(
                                                 "type", "string",
-                                                "description", "Full skill content with YAML front matter and Markdown body. Required for 'save' action. Format:\n---\nname: skill-name\ndescription: What it does\ntype: workflow|reference|tool_def\ntags: [tag1, tag2]\n---\n\n# Title\n\nStep-by-step body..."
+                                                "description", "Markdown starting with a YAML front matter between --- lines (name, description, type: workflow|reference|tool_def, tags), then the body"
                                         ),
                                         "query", Map.of(
                                                 "type", "string",
-                                                "description", "Search query string. Required for 'search' action."
+                                                "description", "Search keywords"
                                         )
                                 ),
                                 "required", List.of("action")
@@ -149,7 +149,7 @@ public class SkillTool {
             }
 
             // R14 门禁：技能脚本按 WRITE 确认（审计模式跳过），拒绝则不执行
-            String denial = gateSkillScript(script, toolName);
+            String denial = gateSkillScript(script, toolName, td.getDescription());
             if (denial != null) {
                 return denial;
             }
@@ -175,7 +175,7 @@ public class SkillTool {
      * @param toolName 技能工具名（形如 {@code <技能名>__<工具名>}）
      * @return null 表示放行；非 null 为拒绝时返回给模型的 error JSON
      */
-    private static String gateSkillScript(Path script, String toolName) {
+    private static String gateSkillScript(Path script, String toolName, String description) {
         String hash = sha256(script);
         String shortHash = hash.length() >= 12 ? hash.substring(0, 12) : hash;
         String groupKey = "skill|" + toolName + "|" + hash;
@@ -197,7 +197,8 @@ public class SkillTool {
             return null;
         }
 
-        var approval = com.cyk.security.SecurityContext.confirmation().request(decision);
+        var approval = com.cyk.security.SecurityContext.confirmation().request(decision,
+                com.cyk.security.ApprovalContext.forSkill(description, script));
         if (approval != com.cyk.security.ConfirmationProvider.Approval.ALLOW) {
             boolean interactive = com.cyk.ui.Ui.userInput().isInteractive();
             recordSkillAudit(auditLogger, toolName, hash, decision,

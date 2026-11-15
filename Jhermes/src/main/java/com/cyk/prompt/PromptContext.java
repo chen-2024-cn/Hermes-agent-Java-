@@ -35,12 +35,19 @@ import java.util.Objects;
 public record PromptContext(CapabilityRegistry capabilities,
                             WorkingDirSnapshot workingDir,
                             String memorySnapshot,
-                            List<Skill> skills) {
+                            List<Skill> skills,
+                            ProjectInstructions projectInstructions) {
+
+    public PromptContext(CapabilityRegistry capabilities, WorkingDirSnapshot workingDir,
+                         String memorySnapshot, List<Skill> skills) {
+        this(capabilities, workingDir, memorySnapshot, skills, ProjectInstructions.EMPTY);
+    }
 
     public PromptContext {
         Objects.requireNonNull(capabilities, "capabilities 不能为 null（可用 CapabilityRegistry.from(空注册表) 表达无工具）");
         Objects.requireNonNull(workingDir, "workingDir 不能为 null");
         memorySnapshot = memorySnapshot == null ? "" : memorySnapshot;
         skills = skills == null ? List.of() : List.copyOf(skills);
+        projectInstructions = projectInstructions == null ? ProjectInstructions.EMPTY : projectInstructions;
     }
 }

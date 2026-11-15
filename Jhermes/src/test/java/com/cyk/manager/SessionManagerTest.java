@@ -133,6 +133,57 @@ class SessionManagerTest {
     }
 
     @Test
+    void emptyAndSystemOnlySessionsShouldNotBeWritten() throws IOException {
+        manager.saveSession(new Session("empty"));
+        Session system = new Session("system-only");
+        system.addMessage("system", "规则");
+        manager.saveSession(system);
+        assertThat(manager.sessionExists("empty")).isFalse();
+        assertThat(manager.sessionExists("system-only")).isFalse();
+    }
+
+    @Test
+    void historicalEmptySessionsShouldBeHiddenWithoutDeletingFiles() throws IOException {
+        Session empty = new Session("empty-old");
+        Session whitespace = new Session("whitespace-old");
+        whitespace.addMessage("user", " \n\t ");
+        Session system = new Session("system-old");
+        system.addMessage("system", "规则");
+        Session assistant = new Session("assistant-old");
+        assistant.addMessage("assistant", "欢迎");
+        for (Session old : List.of(empty, whitespace, system, assistant)) {
+            Path file = sessionsDir().resolve(old.id + ".json");
+            String json = old.toJson().toString();
+            Files.writeString(file, json);
+            assertThat(manager.sessionExists(old.id)).isTrue();
+        }
+        buildSession("real", 1000L, "已提交的问题");
+        assertThat(manager.listSessions()).extracting(s -> s.id).containsExactly("real");
+        for (Session old : List.of(empty, whitespace, system, assistant)) {
+            assertThat(Files.readString(sessionsDir().resolve(old.id + ".json"))).isEqualTo(old.toJson().toString());
+        }
+    }
+
+    @Test
+    void failedUserAndImageOnlySessionsShouldRemainListed() throws IOException {
+        buildSession("failed", 1000L, "失败但已提交的问题");
+        Session image = new Session("image-only");
+        image.addMessage(com.cyk.bean.ModelMessage.userMultimodal("", List.of("data:image/png;base64,local")));
+        image.lastActivity = 2000L;
+        manager.saveSession(image);
+        assertThat(manager.listSessions()).extracting(s -> s.id).containsExactly("image-only", "failed");
+    }
+
+    @Test
+    void refusingEmptySaveShouldNeverTruncateAnExistingFile() throws IOException {
+        buildSession("existing", 1000L, "内容");
+        Path file = sessionsDir().resolve("existing.json");
+        byte[] original = Files.readAllBytes(file);
+        manager.saveSession(new Session("existing"));
+        assertThat(Files.readAllBytes(file)).containsExactly(original);
+    }
+
+    @Test
     void messagesShouldBeTruncatedTo100() {
         Session session = new Session("big");
         for (int i = 0; i < 150; i++) {

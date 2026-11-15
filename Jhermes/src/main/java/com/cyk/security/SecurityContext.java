@@ -96,6 +96,13 @@ public final class SecurityContext {
         }
     }
 
+    /** Keep runtime policy/config fixed, but never carry a previous conversation's approvals forward. */
+    public static synchronized void startConversation(String id) {
+        allowList = new SessionAllowList();
+        confirmation = new InteractiveConfirmation(allowList);
+        setSessionId(id);
+    }
+
     /**
      * @return 命令策略；未初始化时惰性构建安全默认（内置规则+默认工作区+非审计）。
      */

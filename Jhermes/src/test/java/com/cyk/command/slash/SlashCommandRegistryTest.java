@@ -61,12 +61,12 @@ class SlashCommandRegistryTest {
     // =========================================================================
 
     @Test
-    @DisplayName("withBuiltins 预置 exit/retry/help 三条，主名字典序")
-    void builtinsShouldRegisterThreeCommands() {
+    @DisplayName("withBuiltins 注册全部内建与草稿命令，主名字典序")
+    void builtinsShouldRegisterFourCommands() {
         assertThat(registry.commands())
                 .extracting(SlashCommand::name)
-                .containsExactly("/help", "/retry", "exit");   // 斜杠按 ASCII 排在字母前
-        assertThat(registry.commandCount()).isEqualTo(3);
+                .containsExactly("/chat", "/clear", "/context", "/debug", "/help", "/image", "/init", "/multiline", "/paste", "/remove", "/resume", "/retry", "/sessions", "exit");
+        assertThat(registry.commandCount()).isEqualTo(14);
     }
 
     @Test
@@ -245,7 +245,7 @@ class SlashCommandRegistryTest {
         String help = f.joined();
         assertThat(help).contains("/context, /ctx").contains("/model")
                 .contains("显示分段预算明细").contains("切换模型别名");
-        assertThat(registry.commandCount()).isEqualTo(5);
+        assertThat(registry.commandCount()).isEqualTo(15);
     }
 
     @Test
@@ -262,7 +262,9 @@ class SlashCommandRegistryTest {
             assertThat(registry.isCommandInput(question)).isFalse();
         }
         // 整行（含首尾空白）才算裸词命令
-        assertThat(registry.dispatch("\texit \n", f.ctx)).isEqualTo(CommandOutcome.EXIT);
+        assertThat(registry.dispatch("\texit ", f.ctx)).isEqualTo(CommandOutcome.EXIT);
+        assertThat(registry.dispatch("/exit\n粘贴的第二行", f.ctx)).isEqualTo(CommandOutcome.NOT_A_COMMAND);
+        assertThat(registry.isCommandInput("/help\r\nyes")).isFalse();
         // 斜杠形式可带参数（为 /model fast 预留），/exit /quit 与 exit 等价
         assertThat(registry.dispatch("/exit", f.ctx)).isEqualTo(CommandOutcome.EXIT);
         assertThat(registry.dispatch("/quit", f.ctx)).isEqualTo(CommandOutcome.EXIT);
@@ -273,10 +275,11 @@ class SlashCommandRegistryTest {
     void unknownCommandHintShouldListInvocations() {
         Fixture f = fixture();
 
-        registry.dispatch("/context", f.ctx);
+        // /context 已成为内建命令，这里换一个确实未注册的命令名来验证"未知命令"提示
+        registry.dispatch("/model", f.ctx);
 
         String message = f.joined();
-        assertThat(message).contains("未知命令：/context")
+        assertThat(message).contains("未知命令：/model")
                 .contains("/help").contains("/retry").contains("exit")
                 .contains("普通提问无需斜杠前缀");
     }

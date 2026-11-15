@@ -19,18 +19,23 @@ import java.util.Optional;
  *
  * @param text         完整系统提示词（已 strip，段间以空行分隔）
  * @param segments     逐段装配明细（有序，含跳过段；不可变）
- * @param authoredText <b>静态创作段前缀</b>：仅含 manifest 声明的分段（不含记忆等动态尾段）。
- *                     两个用途——① 一致性自检只扫这部分（用户记忆里提到某个工具名
- *                     属用户数据，不在「我们写的指引不得引用未注册工具」约束域内）；
- *                     ② P0-4 前缀缓存的度量口径：这部分同上下文下逐字节稳定，
- *                     而尾段跨会话可变，分开口径才能真实评估缓存命中率
+ * @param authoredText 已渲染的 manifest 段前缀（不含记忆尾段），保留原有缓存与预算口径。
+ *                     其中仍含目录快照、技能索引等模板数据，不用于工具引用检查。
+ * @param consistencyText 已注入段的原始模板，仅供一致性检查；模板数据与记忆不进入此文本。
  */
-public record ComposedPrompt(String text, List<SegmentRender> segments, String authoredText) {
+public record ComposedPrompt(String text, List<SegmentRender> segments, String authoredText,
+                             String consistencyText) {
 
     public ComposedPrompt {
         text = text == null ? "" : text;
         segments = segments == null ? List.of() : List.copyOf(segments);
         authoredText = authoredText == null ? "" : authoredText;
+        consistencyText = consistencyText == null ? "" : consistencyText;
+    }
+
+    /** Compatibility for callers providing a prefix without separately tracked template sources. */
+    public ComposedPrompt(String text, List<SegmentRender> segments, String authoredText) {
+        this(text, segments, authoredText, authoredText);
     }
 
     /** 完整提示词字符数（预算口径；P0-4 换算 token 用）。 */

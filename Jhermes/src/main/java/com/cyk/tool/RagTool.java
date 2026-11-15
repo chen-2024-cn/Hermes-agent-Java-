@@ -147,7 +147,21 @@ public class RagTool {
             logger.info("RAG engine not available, skipping rag tool registration");
             return;
         }
+        registerSchemas(registry);
+    }
 
+    /**
+     * 只注册 4 个 RAG 工具的 schema（说明书），不要求知识库引擎可用。
+     *
+     * <p>供工具定义预览和预算检查使用，不连接数据库或执行工具。
+     * 引擎不可用时，这些工具的处理函数仍返回明确错误，不会操作数据。</p>
+     */
+    public static void registerSchemasForInspection(ToolRegistry registry) {
+        registerSchemas(registry);
+    }
+
+    /** 真正的注册逻辑：{@link #register} 与 {@link #registerSchemasForInspection} 共用，保证两处 schema 完全一致。 */
+    private static void registerSchemas(ToolRegistry registry) {
         registry.register(new com.cyk.bean.ToolEntry.Builder()
             .name("rag_index")
             .toolset("rag")
@@ -186,11 +200,8 @@ public class RagTool {
             .name("rag_list")
             .toolset("rag")
             .schema(Map.of(
-                "description", "列出知识库中已索引的全部文档（源路径与块数），成本极低。两类场景必用："
-                    + "①用户问“知识库里有什么/在哪个库/占多少空间”时直接调用；"
-                    + "②你要做内容创作、提示词/文案/规范/模板改写，或准备给出某种方法论之前，"
-                    + "先调用它扫一眼清单，确认库里是否已有对口资料（你无法预知库里存了什么，不扫就可能凭空作答而漏掉用户沉淀的规范）。"
-                    + "禁止用终端命令搜索磁盘来探查知识库。",
+                "description", "列出知识库中已索引的全部文档（源路径与块数），成本极低。"
+                    + "回答或创作前先调用它，确认库里是否已有对口资料。",
                 "parameters", Map.of(
                     "type", "object",
                     "properties", Map.of())))
@@ -203,15 +214,14 @@ public class RagTool {
             .name("rag_delete")
             .toolset("rag")
             .schema(Map.of(
-                "description", "删除知识库内容。path=删除指定文档的全部块；all=true 且用户已明确同意时清空整个知识库。"
-                    + "存储层是 PostgreSQL（pgvector）里的 rag_documents 表，删除/清空请用本工具，"
-                    + "绝不需要也不应该用 run_command 去找数据库文件或 DROP DATABASE。",
+                "description", "删除知识库内容：path 删除指定文档；all=true 清空整个知识库（需用户明确同意）。"
+                    + "勿用 run_command 操作知识库存储。",
                 "parameters", Map.of(
                     "type", "object",
                     "properties", Map.of(
-                        "path", Map.of("type", "string", "description", "要删除的已索引文档路径（与 all 二选一；可先用 rag_list 查看准确路径）"),
+                        "path", Map.of("type", "string", "description", "已索引文档路径（与 all 二选一）"),
                         "all", Map.of("type", "boolean", "description", "true=清空整个知识库（需同时传 confirm=\"yes\"）"),
-                        "confirm", Map.of("type", "string", "description", "仅在 all=true 时必传，值必为 yes，表示用户已明确同意清空")),
+                        "confirm", Map.of("type", "string", "description", "all=true 时必传，值为 yes（表示用户已同意）")),
                     "required", List.of())))
             .handler(RagTool::delete)
             .emoji("🗑")

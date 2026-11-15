@@ -87,6 +87,7 @@ public final class PromptComposer {
 
         List<SegmentRender> details = new ArrayList<>();
         StringBuilder text = new StringBuilder();
+        StringBuilder consistencyText = new StringBuilder();
 
         for (PromptSegment segment : segments) {
             String skipReason = evaluate(segment.requires(), context, skillsIndex);
@@ -94,6 +95,11 @@ public final class PromptComposer {
                 details.add(SegmentRender.skipped(segment.id(), skipReason));
                 continue;
             }
+            // Check authored instructions before variable substitution; directory and skill names are data.
+            if (!consistencyText.isEmpty()) {
+                consistencyText.append("\n\n");
+            }
+            consistencyText.append(segment.content());
             String body = renderVariables(segment.content(), vars);
             if (!text.isEmpty()) {
                 text.append("\n\n");
@@ -102,8 +108,16 @@ public final class PromptComposer {
             details.add(SegmentRender.injected(segment.id(), body.length()));
         }
 
-        // 静态创作段前缀定格于追加动态尾段之前（供一致性自检与 P0-4 缓存度量）
+        // 已渲染段前缀定格于追加记忆之前，保留原缓存与预算口径。
         String authoredText = text.toString().strip();
+
+        // User-adopted project text is a separate bounded layer, not an authored template.
+        String instructions = context.projectInstructions().renderPrompt();
+        if (!instructions.isEmpty()) {
+            if (!text.isEmpty()) text.append("\n\n");
+            text.append(instructions);
+            details.add(SegmentRender.injected("project-instructions", instructions.length()));
+        }
 
         // 动态记忆尾段：MEMORY.md/USER.md 预渲染快照，非空才注入（放在段序末尾——
         // 其内容跨会话可变，置于尾部使前面的静态段保持前缀稳定，P0-4 R8）
@@ -118,7 +132,8 @@ public final class PromptComposer {
             details.add(SegmentRender.skipped(MEMORY_SNAPSHOT_ID, "无长期记忆内容"));
         }
 
-        ComposedPrompt composed = new ComposedPrompt(text.toString().strip(), details, authoredText);
+        ComposedPrompt composed = new ComposedPrompt(text.toString().strip(), details, authoredText,
+                consistencyText.toString().strip());
         logger.debug("系统提示词装配完成：{} 字符，注入 {} 段，跳过 {} 段",
                 composed.totalChars(), composed.injectedSegments().size(),
                 composed.skippedSegments().size());

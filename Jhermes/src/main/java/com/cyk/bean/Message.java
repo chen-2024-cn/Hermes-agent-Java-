@@ -25,7 +25,13 @@ import java.util.List;
  * @param toolCalls  可选：assistant 消息发起的工具调用列表
  */
 public record Message(String role, String content, long timestamp,
-                      String name, String toolCallId, List<ToolCall> toolCalls) {
+                      String name, String toolCallId, List<ToolCall> toolCalls,
+                      List<ContentPart> contentParts) {
+
+    public Message(String role, String content, long timestamp,
+                   String name, String toolCallId, List<ToolCall> toolCalls) {
+        this(role, content, timestamp, name, toolCallId, toolCalls, null);
+    }
 
     /**
      * 兼容构造：不带工具字段的普通消息（既有调用点与旧文件反序列化路径均走此构造）。
@@ -43,7 +49,7 @@ public record Message(String role, String content, long timestamp,
      */
     public static Message from(ModelMessage message) {
         return new Message(message.getRole(), message.getContent(), System.currentTimeMillis(),
-                message.getName(), message.getToolCallId(), message.getToolCalls());
+                message.getName(), message.getToolCallId(), message.getToolCalls(), message.getContentParts());
     }
 
     /**
@@ -54,12 +60,43 @@ public record Message(String role, String content, long timestamp,
      */
     public ModelMessage toModelMessage() {
         ModelMessage message = new ModelMessage(role, content);
+        message.setContentParts(contentParts);
         message.setName(name);
         message.setToolCallId(toolCallId);
         if (toolCalls != null && !toolCalls.isEmpty()) {
             message.setToolCalls(toolCalls);
         }
         return message;
+    }
+
+    /** A submitted user message is meaningful even when it contains only an image. */
+    public boolean hasUserInput() {
+        return hasUserInput(role, content, contentParts);
+    }
+
+    public static boolean hasUserInput(String role, String content, List<ContentPart> parts) {
+        if (!"user".equals(role)) {
+            return false;
+        }
+        if (content != null && !content.isBlank()) {
+            return true;
+        }
+        if (parts == null) {
+            return false;
+        }
+        for (ContentPart part : parts) {
+            if (part == null) {
+                continue;
+            }
+            if ("text".equals(part.getType()) && part.getText() != null && !part.getText().isBlank()) {
+                return true;
+            }
+            if ("image_url".equals(part.getType()) && part.getImageUrl() != null
+                    && part.getImageUrl().getUrl() != null && !part.getImageUrl().getUrl().isBlank()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** @return 是否为 tool 角色消息（裁剪配对校验用） */

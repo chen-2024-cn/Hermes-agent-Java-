@@ -8,6 +8,7 @@ import java.util.concurrent.Callable;
 
 @CommandLine.Command(name = "chat", description = "与模型对话")
 public class ChatCommand implements Callable<Integer> {
+    @CommandLine.Mixin private CommandHelp help;
 
     @CommandLine.ParentCommand
     private HermesAgent parent;

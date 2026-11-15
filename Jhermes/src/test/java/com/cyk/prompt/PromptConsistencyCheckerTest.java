@@ -265,6 +265,92 @@ class PromptConsistencyCheckerTest {
         assertThat(PromptConsistencyChecker.check(minimal, CapabilityRegistry.from(noRag))).isEmpty();
     }
 
+    @Test
+    @DisplayName("目录/路径/技能/记忆中的下划线名称保留在提示词，但不当作工具指引")
+    void dynamicNamesMustNotEnterConsistencyScan() {
+        CapabilityRegistry caps = CapabilityRegistry.from(fullRegistry());
+        List<String> entries = List.of(".ai_api_key.removed.20261108-144858.bak", ".ai_tools/",
+                ".bash_history", ".node_repl_history", ".python_history", "rag_serach.log");
+        WorkingDirSnapshot directory = new WorkingDirSnapshot(Path.of("C:\\source_tree"), "Windows 11",
+                "C:\\Users\\user_home", entries);
+        ComposedPrompt composed = new PromptComposer(new PromptLoader(null)).compose(
+                new PromptContext(caps, directory, "记忆中的 user_memory_tool",
+                        List.of(skill("demo_skill", "描述里的 external_api_name", "ignored"))));
+
+        assertThat(composed.text()).contains("source_tree", "user_home", "demo_skill",
+                "external_api_name", "user_memory_tool").contains(entries.toArray(String[]::new));
+        assertThat(composed.authoredText()).contains(".ai_tools/", "demo_skill");
+        assertThat(composed.consistencyText()).contains("{{entries}}", "{{cwd}}", "{{skills_index}}")
+                .doesNotContain("ai_api_key", "ai_tools", "bash_history", "node_repl_history",
+                        "python_history", "source_tree", "user_home", "demo_skill", "external_api_name", "user_memory_tool");
+        assertThat(PromptConsistencyChecker.check(composed, caps)).isEmpty();
+        assertThat(PromptConsistencyChecker.warnIfInconsistent(composed, caps)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("同一工作目录段内的真实工具拼写错误仍报错，不能整段豁免")
+    void authoredTypoBesideDirectoryPlaceholderMustStillBeDetected(@TempDir Path overrideDir) throws IOException {
+        Files.writeString(overrideDir.resolve("manifest.yaml"), """
+                version: 1
+                segments:
+                  - id: working-dir
+                    file: working-dir.md
+                """, StandardCharsets.UTF_8);
+        Files.writeString(overrideDir.resolve("working-dir.md"), """
+                当前目录: {{cwd}}
+                {{entries}}
+                检索请调用 rag_serach。
+                {{unknown_variable}}
+                """, StandardCharsets.UTF_8);
+        CapabilityRegistry caps = CapabilityRegistry.from(fullRegistry());
+        WorkingDirSnapshot directory = new WorkingDirSnapshot(Path.of("C:\\source_tree"), "Windows 11",
+                "C:\\Users\\tester", List.of(".ai_tools/", "rag_serach.log"));
+        ComposedPrompt composed = new PromptComposer(new PromptLoader(overrideDir)).compose(
+                new PromptContext(caps, directory, "记忆 external_memory_name", List.of()));
+
+        List<PromptConsistencyChecker.Violation> violations = PromptConsistencyChecker.check(composed, caps);
+        assertThat(violations).extracting(PromptConsistencyChecker.Violation::token).containsExactly("rag_serach");
+        assertThat(violations.get(0).evidenceLine()).isEqualTo("检索请调用 rag_serach。");
+        assertThat(composed.text()).contains("{{unknown_variable}}", ".ai_tools/");
+    }
+
+    @Test
+    @DisplayName("检查文本仅包含实际注入的模板，不检查 requires 已跳过的段")
+    void skippedInstructionsStayOutOfRuntimeScan(@TempDir Path overrideDir) throws IOException {
+        Files.writeString(overrideDir.resolve("manifest.yaml"), """
+                version: 1
+                segments:
+                  - id: skipped
+                    file: skipped.md
+                    requires:
+                      tools: [run_command]
+                  - id: active
+                    file: active.md
+                """, StandardCharsets.UTF_8);
+        Files.writeString(overrideDir.resolve("skipped.md"), "请调用 inactive_fake_tool", StandardCharsets.UTF_8);
+        Files.writeString(overrideDir.resolve("active.md"), "请调用 active_fake_tool", StandardCharsets.UTF_8);
+        CapabilityRegistry caps = CapabilityRegistry.from(toolRegistryWith(Set.of("read_file")));
+        ComposedPrompt composed = new PromptComposer(new PromptLoader(overrideDir)).compose(
+                PromptComposerTestSupport.contextWith(caps, "", List.of()));
+
+        assertThat(composed.consistencyText()).doesNotContain("inactive_fake_tool").contains("active_fake_tool");
+        assertThat(PromptConsistencyChecker.check(composed, caps))
+                .extracting(PromptConsistencyChecker.Violation::token).containsExactly("active_fake_tool");
+    }
+
+    @Test
+    @DisplayName("渲染前缀及字符预算保持原值；兼容旧三参数构造的检查")
+    void renderedPrefixAndLegacyConstructionStayCompatible() {
+        CapabilityRegistry caps = CapabilityRegistry.from(fullRegistry());
+        ComposedPrompt composed = new PromptComposer(new PromptLoader(null)).compose(
+                PromptComposerTestSupport.contextWith(caps, "记忆尾段", List.of()));
+        assertThat(composed.text()).isEqualTo(composed.authoredText() + "\n\n记忆尾段");
+        assertThat(composed.authoredChars()).isEqualTo(composed.authoredText().length());
+        ComposedPrompt legacy = new ComposedPrompt("完整文本", List.of(), "调用 legacy_fake_tool");
+        assertThat(PromptConsistencyChecker.check(legacy, caps))
+                .extracting(PromptConsistencyChecker.Violation::token).containsExactly("legacy_fake_tool");
+    }
+
     // =========================================================================
     // knownNames 防回归：工具集名合法，但拼错的工具集名仍必须被捕获
     // =========================================================================

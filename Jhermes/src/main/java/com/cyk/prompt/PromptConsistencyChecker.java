@@ -105,10 +105,10 @@ public final class PromptConsistencyChecker {
     /**
      * 校验一次装配结果（运行期入口的数据来源）。
      *
-     * <p>只扫<b>静态创作段前缀</b>（{@link ComposedPrompt#authoredText()}）而非全文：
-     * 记忆等动态尾段属用户数据，用户在自己的 MEMORY.md 里提到某个工具名完全正当，
-     * 那不属于「我们写的指引与实现漂移」（本机真实 MEMORY.md 就含 rag_search，
-     * 纳入扫描会每次启动误报）。</p>
+     * <p>只扫已注入段的原始模板（{@link ComposedPrompt#consistencyText()}）：
+     * 模板中的工具指引仍需匹配注册实况，但目录名、路径、技能索引和记忆属于数据，
+     * 不能当作工具声明。模板占位符由 {@link #checkText} 剔除，
+     * 不能通过删除整个工作目录段或按文件名豁免来遮蔽真实拼写错误。</p>
      *
      * @param composed     装配结果
      * @param capabilities 注册实况
@@ -118,7 +118,7 @@ public final class PromptConsistencyChecker {
         if (composed == null || capabilities == null) {
             return List.of();
         }
-        return checkText(composed.authoredText(), knownNames(capabilities));
+        return checkText(composed.consistencyText(), knownNames(capabilities));
     }
 
     /**

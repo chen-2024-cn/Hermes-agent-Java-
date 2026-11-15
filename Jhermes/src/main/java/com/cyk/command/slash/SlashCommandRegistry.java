@@ -62,6 +62,7 @@ public final class SlashCommandRegistry {
     public static final String EXIT_COMMAND = "exit";
     public static final String RETRY_COMMAND = "/retry";
     public static final String HELP_COMMAND = "/help";
+    public static final String CONTEXT_COMMAND = "/context";
 
     /** 已注册命令：key = 小写调用名（含别名）→ 命令声明。别名与主名同表，匹配一次命中。 */
     private final Map<String, SlashCommand> byInvocationName = new LinkedHashMap<>();
@@ -83,12 +84,46 @@ public final class SlashCommandRegistry {
                     ctx.retryLastTurn().run();
                     return CommandOutcome.HANDLED;
                 }));
+        registry.register(new SlashCommand(CONTEXT_COMMAND, List.of("/ctx"),
+                "显示上下文预算明细：system、tools、历史各占多少 token（估算）",
+                (ctx, arg) -> {
+                    // 报告内容随对话变化，所以由宿主在这一刻现算（Supplier），而不是预先算好
+                    ctx.println(ctx.contextReport().get());
+                    return CommandOutcome.HANDLED;
+                }));
         registry.register(new SlashCommand(HELP_COMMAND, List.of("/?"),
                 "显示本帮助：全部命令与当前真实可用能力",
                 (ctx, arg) -> {
                     ctx.println(renderHelp(registry, ctx.capabilities()));
                     return CommandOutcome.HANDLED;
                 }));
+        registry.register(new SlashCommand("/init", List.of(),
+                "创建项目指令模板, 已有文件不覆盖",
+                (ctx, arg) -> {
+                    ctx.localCommand().accept("/init" + (arg.isEmpty() ? "" : " " + arg));
+                    return CommandOutcome.HANDLED;
+                }));
+        Map<String, String> localCommands = new LinkedHashMap<>();
+        localCommands.put("/sessions", "列出历史会话 (同 Jhermes sessions)");
+        localCommands.put("/resume", "恢复会话: /resume [会话ID或 --last]");
+        localCommands.put("/chat", "保存当前会话并开始新对话");
+        localCommands.put("/debug", "工具定义: /debug tools-json [--json或 --verbose]");
+        localCommands.forEach((name, description) -> registry.register(new SlashCommand(name, List.of(),
+                description, (ctx, arg) -> {
+                    ctx.localCommand().accept(name + (arg.isEmpty() ? "" : " " + arg));
+                    return CommandOutcome.HANDLED;
+                })));
+        Map<String, String> inputCommands = new LinkedHashMap<>();
+        inputCommands.put("/paste", "读取剪贴板文字/图片到草稿, 不自动发送");
+        inputCommands.put("/image", "附加本地图片: /image \"图片路径\"");
+        inputCommands.put("/remove", "移除附件: /remove <编号>; 无参数列出附件");
+        inputCommands.put("/clear", "清空待发送草稿和图片");
+        inputCommands.put("/multiline", "安全多行输入, 单独一行 /end 完成草稿");
+        inputCommands.forEach((name, description) -> registry.register(new SlashCommand(name, List.of(),
+                description, (ctx, arg) -> {
+                    ctx.inputCommand().accept(name + (arg.isEmpty() ? "" : " " + arg));
+                    return CommandOutcome.HANDLED;
+                })));
         return registry;
     }
 
@@ -124,6 +159,16 @@ public final class SlashCommandRegistry {
                 .toList();
     }
 
+    /** The editor and /help use the actual command declarations, never a second command list. */
+    public List<com.cyk.ui.UserInput.CommandChoice> menuChoices() {
+        return commands().stream().map(command -> {
+            String name = command.name().equals(EXIT_COMMAND) ? "/exit" : command.name();
+            if (name.equals("/debug")) name = "/debug tools-json";
+            boolean arguments = List.of("/resume", "/image", "/remove", "/debug tools-json").contains(name);
+            return new com.cyk.ui.UserInput.CommandChoice(name, command.description(), arguments);
+        }).toList();
+    }
+
     /**
      * 输入是否会被当作命令处理。
      *
@@ -131,7 +176,7 @@ public final class SlashCommandRegistry {
      * 或整行就是一个未注册的斜杠 token（将得到未知命令提示）。</p>
      */
     public boolean isCommandInput(String input) {
-        if (input == null || input.isBlank()) {
+        if (input == null || input.isBlank() || input.indexOf('\n') >= 0 || input.indexOf('\r') >= 0) {
             return false;
         }
         String trimmed = input.trim();
@@ -142,6 +187,7 @@ public final class SlashCommandRegistry {
         // 斜杠开头：已注册即命令；未注册但整行为单 token 也算（走提示分支）；
         // 未注册且后面还有文本 → 当普通提问（如 /usr/bin/env 是什么）
         return byInvocationName.containsKey(head.toLowerCase(Locale.ROOT))
+                || head.equalsIgnoreCase("/instructions") || head.equalsIgnoreCase("/instructiongs")
                 || head.length() == trimmed.length();
     }
 
@@ -153,7 +199,7 @@ public final class SlashCommandRegistry {
      * @return 三态结果，主循环据此决定「交模型 / 继续 / 退出」
      */
     public CommandOutcome dispatch(String input, SlashCommandContext ctx) {
-        if (input == null || input.isBlank()) {
+        if (input == null || input.isBlank() || input.indexOf('\n') >= 0 || input.indexOf('\r') >= 0) {
             return CommandOutcome.NOT_A_COMMAND;
         }
         String trimmed = input.trim();
@@ -166,6 +212,10 @@ public final class SlashCommandRegistry {
                 ? byInvocationName.get(head.toLowerCase(Locale.ROOT))
                 : matchBareWord(head, trimmed);
         if (command == null) {
+            if (head.equalsIgnoreCase("/instructions") || head.equalsIgnoreCase("/instructiongs")) {
+                ctx.println(unknownSlashCommandMessage(head));
+                return CommandOutcome.HANDLED;
+            }
             // 整行就是一个未注册的斜杠 token（如 /helpp）→ 判为打错的命令，
             // 就地提示并消化：模型拿到 /helpp 只会困惑，提示对用户更有用
             if (head.startsWith("/") && head.length() == trimmed.length()) {

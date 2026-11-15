@@ -74,12 +74,16 @@ public class FileTool {
      */
     private static String checkSensitive(Path path) {
         String marker = SensitivePathGuard.checkPath(path);
+        if (marker == null && Files.exists(path)) {
+            try { marker = SensitivePathGuard.checkPath(path.toRealPath()); }
+            catch (IOException e) { return ToolRegistry.toolError("无法确认文件真实路径, 已拒绝访问。"); }
+        }
         if (marker == null) {
             return null;
         }
         logger.warn("已拦截敏感路径访问: {} （标记: {}）", path, marker);
         return ToolRegistry.toolError(
-                "路径被安全策略拦截：触及敏感凭据位置（" + marker + "）。"
+                "路径被安全策略拦截：触及敏感凭据或受保护位置（" + marker + "）。"
                         + "用户的密钥/token 绝不允许被读入对话上下文，也不允许被本工具改写。"
                         + "如确需相关配置信息，请告知用户自行查看；如需改配置，请让用户手动编辑。");
     }
@@ -195,7 +199,8 @@ public class FileTool {
                     pathStr, Paths.get(System.getProperty("user.dir")));
             if (toSkills || outsideWorkspace) {
                 String why = toSkills ? "写入技能目录（下次启动会被注册为工具）" : "写入启动工作区之外的目录";
-                String denial = confirmWriteGate(path, why);
+                String denial = confirmWriteGate(path, why,
+                        com.cyk.security.ApprovalContext.forFile(args, path, append, Files.exists(path)));
                 if (denial != null) {
                     return denial;
                 }
@@ -232,7 +237,7 @@ public class FileTool {
      *
      * @return null 表示放行；非 null 为拒绝时返回的错误结果
      */
-    private static String confirmWriteGate(Path path, String why) {
+    private static String confirmWriteGate(Path path, String why, com.cyk.security.ApprovalContext context) {
         PolicyDecision decision = new PolicyDecision(
                 CommandLevel.WRITE, List.of("file-write-boundary"), why,
                 List.of(), "write_file " + path,
@@ -244,7 +249,7 @@ public class FileTool {
         if (SecurityContext.isYolo()) {
             return null;// --yolo 跳过 WRITE 确认（不跳 DANGEROUS，但文件写入按 WRITE 处理）
         }
-        ConfirmationProvider.Approval approval = SecurityContext.confirmation().request(decision);
+        ConfirmationProvider.Approval approval = SecurityContext.confirmation().request(decision, context);
         if (approval != ConfirmationProvider.Approval.ALLOW) {
             logger.warn("用户拒绝写入: {} （{}）", path, why);
             return ToolRegistry.toolError("用户拒绝写入文件：" + why + "（" + path + "）。"
@@ -281,7 +286,8 @@ public class FileTool {
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                     String fileName = file.getFileName().toString();
-                    if (FileSystems.getDefault().getPathMatcher("glob:" + pattern).matches(Path.of(fileName))) {
+                    if (!SensitivePathGuard.isSensitivePath(file)
+                            && FileSystems.getDefault().getPathMatcher("glob:" + pattern).matches(Path.of(fileName))) {
                         results.add(file.toString());
                         if (results.size() >= MAX_RESULTS) return FileVisitResult.TERMINATE;
                     }
@@ -355,6 +361,7 @@ public class FileTool {
 
     private static void grepFile(Path file, java.util.regex.Pattern pattern, List<Map<String, Object>> results) {
         try {
+            if (SensitivePathGuard.isSensitivePath(file) || SensitivePathGuard.isSensitivePath(file.toRealPath())) return;
             List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
             for (int i = 0; i < lines.size(); i++) {
                 if (pattern.matcher(lines.get(i)).find()) {
@@ -416,13 +423,15 @@ public class FileTool {
 
         registry.register(new ToolEntry.Builder()
                 .name("write_file").toolset("file_operations")
-                .schema(Map.of("description", "Write content to a file",
+                .schema(Map.of("description", "Write file content; explain purpose and expected result for approval",
                         "parameters", Map.of(
                                 "type", "object",
                                 "properties", Map.of(
                                         "path", Map.of("type", "string", "description", "File path"),
                                         "content", Map.of("type", "string", "description", "Content to write"),
-                                        "append", Map.of("type", "boolean", "description", "Append instead of overwrite")),
+                                        "append", Map.of("type", "boolean", "description", "Append instead of overwrite"),
+                                        "purpose", Map.of("type", "string", "description", "一句话说明写入目的"),
+                                        "expected_result", Map.of("type", "string", "description", "预期写入结果，不是已完成结果")),
                                 "required", List.of("path", "content"))))
                 .handler(FileTool::writeFile)
                 .build());

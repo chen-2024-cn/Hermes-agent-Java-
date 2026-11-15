@@ -72,28 +72,62 @@ public final class ChatRunner {
             return 1;
         }
 
+        // Initialize once before banner layout and before confirmation captures the shared input.
+        // This does not consume a message or create a second stdin reader.
+        com.cyk.ui.Ui.initializeInteractiveInput();
+
         // 启动横幅：整个进程只打印一次。放在 api_key 校验之后，避免
         // 配置不完整的用户先看到一屏品牌图、再看到报错，信息主次颠倒。
         // 这里是 chat / resume 两个命令的共同汇聚点，两条路径均覆盖且不会重复打印。
-        StartupBanner.print(Constants.VERSION);
-
-        System.out.println("模型: " + config.getCurrentModel());
-        System.out.println("温度: " + config.getTemperature());
-        System.out.println("流式: " + (config.isStreamEnabled() ? "开启" : "关闭"));
+        java.util.List<String> startupLines = new java.util.ArrayList<>();
+        startupLines.add("模型: " + config.getCurrentModel());
+        startupLines.add("温度: " + config.getTemperature());
+        startupLines.add("流式: " + (config.isStreamEnabled() ? "开启" : "关闭"));
         // P0-2 R8：--yolo / --policy=audit 开启时在 banner 下常驻醒目警示，
         // 避免用户在遗忘自己降了防护的情况下盲目信任自动放行。
         if (config.isYolo()) {
-            System.out.println("⚠ --yolo 已开启：写入类（WRITE）命令不再逐条确认；"
+            startupLines.add("⚠ --yolo 已开启：写入类（WRITE）命令不再逐条确认；"
                     + "高危（DANGEROUS）仍需键入 yes，灾难（BLOCKED）仍然拒绝。");
         }
         if (config.isAuditPolicyOnly()) {
-            System.out.println("⚠ --policy=audit 已开启：命令只分类记录、不打断（排查误杀用）；"
+            startupLines.add("⚠ --policy=audit 已开启：命令只分类记录、不打断（排查误杀用）；"
                     + "但 BLOCKED 灾难命令仍然拒绝。");
         }
 
-        Agent agent = new Agent(config, resumeSessionId);
-        agent.run();
-        return 0;
+        StartupBanner.print(Constants.VERSION, startupLines);
+
+        return runConversations(new Agent(config, resumeSessionId));
+    }
+
+    /** A single controller owns stdin and the shutdown hook across conversation switches. */
+    public static int runConversations(Agent agent) {
+        java.util.concurrent.atomic.AtomicReference<Agent> current = new java.util.concurrent.atomic.AtomicReference<>(agent);
+        Thread saver = new Thread(() -> current.get().saveQuietly(), "jhermes-session-saver");
+        Runtime.getRuntime().addShutdownHook(saver);
+        try {
+            while (true) {
+                Agent active = current.get();
+                Agent.ConversationRequest request = active.runConversation();
+                if (!request.switching()) return 0;
+                Agent next;
+                try {
+                    next = active.prepareNextConversation(request.sessionId());
+                } catch (Exception e) {
+                    com.cyk.ui.Ui.println("无法切换会话: " + e.getMessage() + "; 当前会话未结束。");
+                    continue;
+                }
+                if (!active.finishForSwitch()) {
+                    com.cyk.ui.Ui.println("会话保存失败, 保留当前会话。");
+                    continue;
+                }
+                next.activateNextConversation(active);
+                current.set(next);
+            }
+        } finally {
+            current.get().saveQuietly();
+            try { Runtime.getRuntime().removeShutdownHook(saver); } catch (IllegalStateException ignored) { }
+            com.cyk.ui.Ui.userInput().close();
+        }
     }
 
     /**

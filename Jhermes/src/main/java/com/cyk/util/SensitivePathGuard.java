@@ -64,10 +64,7 @@ public final class SensitivePathGuard {
         ".alicloud",                   // 阿里云 CLI 凭据
         ".tencentcloud",               // 腾讯云 CLI 凭据
         // Jhermes 数据目录里的 config.yaml 含模型 api_key 与 PG 口令，读取即等于泄密。
-        // 新旧目录名必须同时拦截：Constants.migrateLegacyData 迁移失败/两目录并存时，
-        // 凭据仍在旧的 .skhermes 下，只拦新名会留下真实可利用的泄露口子。
         ".jhermes\\config.yaml", ".jhermes/config.yaml",
-        ".skhermes\\config.yaml", ".skhermes/config.yaml",
         // ---- P0-2 R11：自我保护——策略文件目录与审计/日志目录，读写均拦 ----
         // 防止模型改写自己的命令规则给自己开权限，或篡改/删除审计留痕。
         // 注意：marker 结尾不能是紧跟字母数字的位置——右边界校验会拒绝（如 "audit-" 后接 "2026"），
@@ -81,6 +78,10 @@ public final class SensitivePathGuard {
         // 用户的合法定制走手工编辑，模型的任何正常任务都不需要触碰该目录。
         ".jhermes\\prompts", ".jhermes/prompts"
     );
+
+    // Project rules must be adopted through the host UI, never rewritten or loaded by model tools.
+    private static final java.util.regex.Pattern INSTRUCTION_FILE = java.util.regex.Pattern.compile(
+            "(?i)(?<![a-z0-9_.-])(?:jhermes(?:\\.local)?\\.md|agents?\\.md|claude\\.md)(?![a-z0-9_.-])");
 
     private SensitivePathGuard() {
         // 工具类禁止实例化
@@ -96,6 +97,7 @@ public final class SensitivePathGuard {
         if (text == null || text.isEmpty()) {
             return null;
         }
+        if (INSTRUCTION_FILE.matcher(text).find()) return "项目指令文件 (请手工编辑, 下一任务自动加载)";
         String normalized = text.toLowerCase(Locale.ROOT);
         for (String marker : MARKERS) {
             int idx = normalized.indexOf(marker);

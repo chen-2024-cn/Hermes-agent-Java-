@@ -40,6 +40,19 @@ public interface UserInput {
      */
     String readLine(String prompt);
 
+    /** Message editing is separate from approvals, but shares the same input source. */
+    default String readMessage(String prompt, InputDraft draft) {
+        return readLine(prompt);
+    }
+
+    record CommandChoice(String name, String description, boolean takesArguments) { }
+
+    /** A basic input source keeps static /help; capable editors display the same registry choices. */
+    default void configureCommands(java.util.List<CommandChoice> commands) { }
+
+    /** The line editor supplies separately typed commands without expanding pasted blocks. */
+    default String commandText(String submitted) { return submitted; }
+
     /**
      * 是否可以与用户交互。
      *
@@ -97,6 +110,17 @@ public interface UserInput {
                 Ui.diag().println("读取输入失败: " + e.getMessage());
                 return null;
             }
+        }
+
+        @Override
+        public String readMessage(String prompt, InputDraft draft) {
+            if (!draft.displayText().isEmpty()) {
+                Ui.println("待发送草稿: " + draft.displayText());
+                Ui.println("Enter 发送; 输入文字追加; /clear 清空");
+            }
+            String line = readLine(prompt);
+            if (line == null || draft.text().isEmpty() || line.startsWith("/")) return line;
+            return line.isEmpty() ? draft.text() : draft.text() + "\n" + line;
         }
 
         @Override

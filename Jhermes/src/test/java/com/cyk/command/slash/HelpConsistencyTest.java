@@ -204,7 +204,7 @@ class HelpConsistencyTest {
         String help = SlashCommandRegistry.renderHelp(REGISTRY, caps);
 
         List<SlashCommand> commands = REGISTRY.commands();
-        assertThat(commands).hasSize(3);
+        assertThat(commands).hasSize(14);
         for (SlashCommand command : commands) {
             String invocation = String.join(", ", command.invocationNames());
             assertThat(help).as("命令 %s 的调用名缺失", command.name()).contains(invocation);
